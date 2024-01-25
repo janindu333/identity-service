@@ -40,7 +40,7 @@ public class AuthController {
            return new BaseResponse<>(false, null, 0, "Invalied access", null);
             }
         } catch (Exception e) {
-               return new BaseResponse<>(false, null, 0, "user is not matched", null);
+               return new BaseResponse<>(false, null, 0, "user or password is not matched", null);
         }
     }
     @GetMapping("/getToken")

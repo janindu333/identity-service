@@ -12,4 +12,5 @@ public class IdentityserviceApplication {
 		SpringApplication.run(IdentityserviceApplication.class, args);
 	}
 
+
 }
