@@ -43,6 +43,7 @@ public class AuthController {
                return new BaseResponse<>(false, null, 0, "user or password is not matched", null);
         }
     }
+
     @GetMapping("/getToken")
     public BaseResponse<String> getAccessTokenByRefreshToken(@RequestParam("refreshToken") String refreshToken) {
         if (refreshToken != null && !refreshToken.isEmpty()) {
