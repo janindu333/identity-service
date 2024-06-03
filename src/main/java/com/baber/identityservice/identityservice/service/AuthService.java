@@ -22,38 +22,38 @@ public class AuthService {
     private JwtService jwtService;
 
     public BaseResponse<String> saveUser(UserCredential userCredential) {
-
         try {
             Optional<UserCredential> existingUserByName = userCredentialRepository.findByName(userCredential.getName());
             if (existingUserByName.isPresent()) {
                 return new BaseResponse<>(false, null, 0, "user name already exist",null);
             } else {
-
-                Optional<UserCredential> existingUserByEmail = userCredentialRepository
-                        .findByEmail(userCredential.getEmail());
+                Optional<UserCredential> existingUserByEmail = userCredentialRepository.findByEmail(userCredential.getEmail());
                 if (existingUserByEmail.isPresent()) {
                     return new BaseResponse<>(false, null, 0, "user email already exist", null);
-
                 } else {
                     userCredential.setPassword(passwordEncoder.encode(userCredential.getPassword()));
+                    userCredential.setRole("USER"); // Default role
                     userCredentialRepository.save(userCredential);
                     return new BaseResponse<>(true, "user added", 0, null, null);
-
                 }
             }
         } catch (Exception e) {
-
             e.printStackTrace();
             return new BaseResponse<>(false, null, 0, "user added failed, please try again", null);
         }
+    }
 
-    }
+
     public String generateAccessToken(String username) {
-        return jwtService.generateToken(username, 30 * 60 * 1000); // Set token expiration to 30 minutes
+        UserCredential user = userCredentialRepository.findByName(username).orElseThrow(() -> new RuntimeException("User not found"));
+        return jwtService.generateToken(username, user.getRole(), 30 * 60 * 1000); // Pass role to token generation
     }
+
     public String generateRefreshToken(String username) {
-        return jwtService.generateToken(username, 7 * 24 * 60 * 60 * 1000); // Set token expiration to 7 days
+        UserCredential user = userCredentialRepository.findByName(username).orElseThrow(() -> new RuntimeException("User not found"));
+        return jwtService.generateToken(username, user.getRole(), 7 * 24 * 60 * 60 * 1000); // Pass role to token generation
     }
+
     public String getAccessTokenByRefreshToken(String refreshToken) {
         // Validate the refresh token using JwtService
         if (jwtService.validateToken(refreshToken)) {

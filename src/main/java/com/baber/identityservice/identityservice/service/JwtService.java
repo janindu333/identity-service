@@ -34,10 +34,16 @@ public class JwtService {
 //        return createToken(claims, userName);
 //    }
 
-    public String generateToken(String userName, long expirationMillis) {
+    public String generateToken(String userName, String role, long expirationMillis) {
         Map<String, Object> claims = new HashMap<>();
+        claims.put("role", role);
         return createToken(claims, userName, expirationMillis);
     }
+
+    public String extractRole(String token) {
+        return extractClaim(token, claims -> claims.get("role", String.class));
+    }
+
 
     private String createToken(Map<String, Object> claims, String userName, long expirationMillis) {
         return Jwts.builder()

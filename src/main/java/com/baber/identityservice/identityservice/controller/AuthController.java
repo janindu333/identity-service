@@ -4,6 +4,7 @@ import com.baber.identityservice.identityservice.dto.AddLocationRequest;
 import com.baber.identityservice.identityservice.dto.ForgotPasswordRequest;
 import com.baber.identityservice.identityservice.dto.TokenResponse;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.authentication.AuthenticationManager;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.Authentication;
@@ -22,12 +23,13 @@ public class AuthController {
     private AuthenticationManager authenticationManager;
 
     @PostMapping("/register")
-    public BaseResponse<String> addNewUser(@RequestBody UserCredential user) {
+    public BaseResponse<String> register(@RequestBody UserCredential user) {
 
         return service.saveUser(user);
     }
+
     @PostMapping("/login")
-    public BaseResponse<TokenResponse> getToken(@RequestBody AuthRequest authRequest) {
+    public BaseResponse<TokenResponse> login(@RequestBody AuthRequest authRequest) {
         try {
             Authentication authenticate = authenticationManager.authenticate(
                     new UsernamePasswordAuthenticationToken(authRequest.getUsername(), authRequest.getPassword()));
@@ -84,5 +86,11 @@ public class AuthController {
         } else {
             return new BaseResponse<>(false, null, 0, "User is not found",  null);
         }
+    }
+
+    @PreAuthorize("hasRole('ADMIN')")
+    @GetMapping("/admin")
+    public BaseResponse<String> adminEndpoint() {
+        return new BaseResponse<>(true, "Admin access granted", 0, null, null);
     }
 }

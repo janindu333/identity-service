@@ -1,6 +1,5 @@
 package com.baber.identityservice.identityservice.config;
 
-import org.springframework.beans.factory.annotation.Configurable;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.security.authentication.AuthenticationManager;
@@ -29,10 +28,10 @@ public class AuthConfig {
         .authorizeHttpRequests(auth -> auth
                .requestMatchers("/auth/register", "/auth/login", "/auth/validate",
                        "/auth/getToken","/auth/reset-password","/auth/addLocation").permitAll()
+                .requestMatchers("/admin/**").hasRole("ADMIN")
             .anyRequest().authenticated()
-        ) 
+        )
                 .build();
-
     }
     @Bean
     public PasswordEncoder passwordEncoder() {
