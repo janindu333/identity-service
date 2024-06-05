@@ -12,7 +12,6 @@ import java.util.Optional;
 @RestController
 @RequestMapping("/roles")
 public class RoleController {
-
     @Autowired
     private RoleService roleService;
 
