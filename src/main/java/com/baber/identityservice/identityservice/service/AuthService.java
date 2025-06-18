@@ -1,17 +1,21 @@
 package com.baber.identityservice.identityservice.service;
 
-import java.util.Optional;
-
 import com.baber.identityservice.identityservice.dto.AddLocationRequest;
+import com.baber.identityservice.identityservice.dto.BaseResponse;
+import com.baber.identityservice.identityservice.entity.UserCredential;
+import com.baber.identityservice.identityservice.repository.UserCredentialRepository;
+import com.baber.identityservice.identityservice.config.ServiceLogger;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 
-import com.baber.identityservice.identityservice.dto.BaseResponse;
-import com.baber.identityservice.identityservice.entity.UserCredential;
-import com.baber.identityservice.identityservice.repository.UserCredentialRepository;
+import java.util.Optional;
+
 @Service
 public class AuthService {
+
+    private static final ServiceLogger logger = new ServiceLogger(AuthService.class);
+
     @Autowired
     private UserCredentialRepository userCredentialRepository;
 
@@ -22,92 +26,104 @@ public class AuthService {
     private JwtService jwtService;
 
     public BaseResponse<String> saveUser(UserCredential userCredential) {
+        logger.info("Saving user: " + userCredential.getName());
         try {
             Optional<UserCredential> existingUserByName = userCredentialRepository.findByName(userCredential.getName());
             if (existingUserByName.isPresent()) {
-                return new BaseResponse<>(false, null, 0, "user name already exist",null);
-            } else {
-                Optional<UserCredential> existingUserByEmail = userCredentialRepository.findByEmail(userCredential.getEmail());
-                if (existingUserByEmail.isPresent()) {
-                    return new BaseResponse<>(false, null, 0, "user email already exist", null);
-                } else {
-                    userCredential.setPassword(passwordEncoder.encode(userCredential.getPassword()));
-                    userCredential.setRole("USER"); // Default role
-                    userCredentialRepository.save(userCredential);
-                    return new BaseResponse<>(true, "user added", 0, null, null);
-                }
+                logger.warn("User with name: " + userCredential.getName() + " already exists");
+                return new BaseResponse<>(false, null, 0, "User name already exists", null);
             }
+
+            Optional<UserCredential> existingUserByEmail = userCredentialRepository.findByEmail(userCredential.getEmail());
+            if (existingUserByEmail.isPresent()) {
+                logger.warn("User with email: " + userCredential.getEmail() + " already exists");
+                return new BaseResponse<>(false, null, 0, "User email already exists", null);
+            }
+
+            userCredential.setPassword(passwordEncoder.encode(userCredential.getPassword()));
+            userCredential.setRole("USER"); // Default role
+            userCredentialRepository.save(userCredential);
+            logger.success("User saved successfully: " + userCredential.getName());
+            return new BaseResponse<>(true, "User added", 0, null, null);
         } catch (Exception e) {
-            e.printStackTrace();
-            return new BaseResponse<>(false, null, 0, "user added failed, please try again", null);
+            logger.error("Error saving user: " + userCredential.getName() + ", Error: " + e.getMessage());
+            return new BaseResponse<>(false, null, 0, "User registration failed, please try again later", null);
         }
     }
 
-
     public String generateAccessToken(String username) {
-        UserCredential user = userCredentialRepository.findByName(username).orElseThrow(() -> new RuntimeException("User not found"));
-        return jwtService.generateToken(username, user.getRole(), 30 * 60 * 1000); // Pass role to token generation
+        logger.info("Generating access token for user: " + username);
+        UserCredential user = userCredentialRepository.findByName(username)
+                .orElseThrow(() -> {
+                    logger.error("User not found: " + username);
+                    return new RuntimeException("User not found");
+                });
+        return jwtService.generateToken(username, user.getRole(), 120 * 60 * 1000); // 2 hours
     }
 
     public String generateRefreshToken(String username) {
-        UserCredential user = userCredentialRepository.findByName(username).orElseThrow(() -> new RuntimeException("User not found"));
-        return jwtService.generateToken(username, user.getRole(), 7 * 24 * 60 * 60 * 1000); // Pass role to token generation
+        logger.info("Generating refresh token for user: " + username);
+        UserCredential user = userCredentialRepository.findByName(username)
+                .orElseThrow(() -> {
+                    logger.error("User not found: " + username);
+                    return new RuntimeException("User not found");
+                });
+        return jwtService.generateToken(username, user.getRole(), 7 * 24 * 60 * 60 * 1000); // 7 days
     }
 
     public String getAccessTokenByRefreshToken(String refreshToken) {
-        // Validate the refresh token using JwtService
+        logger.info("Validating refresh token");
         if (jwtService.validateToken(refreshToken)) {
-            // Extract the username from the refresh token
             String username = jwtService.extractUsername(refreshToken);
-            // Generate a new access token for the user
+            logger.info("Refresh token valid, generating new access token for user: " + username);
             return generateAccessToken(username);
+        } else {
+            logger.warn("Invalid refresh token");
+            return null;
         }
-        return null; // Return null if the refresh token is invalid
     }
+
     public boolean validateToken(String token) {
-      
-        return jwtService.validateToken(token); 
+        logger.info("Validating token");
+        return jwtService.validateToken(token);
     }
-    public UserCredential findById(int id){
-        Optional<UserCredential> userCredential= userCredentialRepository.findById(id);
+
+    public UserCredential findById(int id) {
+        logger.info("Finding user by ID: " + id);
+        Optional<UserCredential> userCredential = userCredentialRepository.findById(id);
         return userCredential.orElse(null);
     }
 
-    public boolean resetPassword(int id, String password){
-
-        // Step 1: Retrieve the user from the database using the given ID
+    public boolean resetPassword(int id, String password) {
+        logger.info("Resetting password for user ID: " + id);
         Optional<UserCredential> optionalUser = userCredentialRepository.findById(id);
 
-        // Check if the user exists with the given ID
         if (optionalUser.isEmpty()) {
+            logger.warn("User not found with ID: " + id);
             return false;
         }
 
         UserCredential user = optionalUser.get();
-
-        // Step 2: Update the password of the retrieved user
         user.setPassword(passwordEncoder.encode(password));
-
-        // Step 3: Save the updated user back to the database
         userCredentialRepository.save(user);
-
+        logger.info("Password reset successfully for user ID: " + id);
         return true;
     }
-    public boolean updateLocation(AddLocationRequest addLocationRequest){
 
+    public boolean updateLocation(AddLocationRequest addLocationRequest) {
+        logger.info("Updating location for user ID: " + addLocationRequest.getUserId());
         Optional<UserCredential> optionalUser = userCredentialRepository.findById(addLocationRequest.getUserId());
 
         if (optionalUser.isEmpty()) {
+            logger.warn("User not found for ID: " + addLocationRequest.getUserId());
             return false;
         }
 
         UserCredential user = optionalUser.get();
-
         user.setLatitude(addLocationRequest.getLatitude());
         user.setLongitude(addLocationRequest.getLongitude());
-
         userCredentialRepository.save(user);
-
+        logger.info("Location updated successfully for user ID: " + addLocationRequest.getUserId());
         return true;
     }
 }

@@ -24,13 +24,13 @@ public class RoleService {
                 return roleRepository.findById(id);
         }
 
-        public BaseResponse<Role> createRole(Role role) {
+        public Optional<Role> createRole(Role role) {
                 Optional<Role> existingRole = roleRepository.findByName(role.getName());
                 if (existingRole.isPresent()) {
-                        return new BaseResponse<>(false, "Role already exists", 409, "Role with name " + role.getName() + " already exists", null);
+                        return Optional.empty(); // Indicate that the role already exists
                 }
                 Role createdRole = roleRepository.save(role);
-                return new BaseResponse<>(true, "Role created successfully", 0, null, createdRole);
+                return Optional.of(createdRole);
         }
 
         public Optional<Role> updateRole(int id, Role roleDetails) {
@@ -46,6 +46,10 @@ public class RoleService {
                         roleRepository.delete(role);
                         return true;
                 }).orElse(false);
+        }
+
+        public Optional<Role> findByNameAndSalonId(String name, Long salonId) {
+                return roleRepository.findByNameAndSalonId(name, salonId);
         }
 }
 

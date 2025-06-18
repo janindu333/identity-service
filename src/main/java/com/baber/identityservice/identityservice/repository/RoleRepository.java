@@ -6,5 +6,11 @@ import com.baber.identityservice.identityservice.entity.Role;
 import java.util.Optional;
 
 public interface RoleRepository extends JpaRepository<Role, Integer> {
+    Optional<Role> findById(Long id);
+    Optional<Role> findByNameAndSalonId(String name, Long salonId);
+
+    Optional<Role> findByIdAndSalonId(Long id, Long salonId);
+
     Optional<Role> findByName(String name);
+
 }

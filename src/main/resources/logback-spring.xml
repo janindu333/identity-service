@@ -1,0 +1,30 @@
+<configuration>
+    <!-- Logstash TCP Socket Appender -->
+    <appender name="stash" class="net.logstash.logback.appender.LogstashTcpSocketAppender">
+        <destination>logstash.default.svc.cluster.local:5000</destination>
+<!--        <destination>localhost:5000</destination>-->
+
+        <encoder class="net.logstash.logback.encoder.LoggingEventCompositeJsonEncoder">
+            <providers>
+                <timestamp />
+                <loggerName />
+                <threadName />
+                <level />
+                <message />
+                <context />
+            </providers>
+        </encoder>
+    </appender>
+
+    <!-- Console Output (for testing) -->
+    <appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>%d{yyyy-MM-dd HH:mm:ss} %-5level %logger{36} - %msg %n</pattern>
+        </encoder>
+    </appender>
+
+    <root level="INFO">
+        <appender-ref ref="STDOUT" />
+        <appender-ref ref="stash" />
+    </root>
+</configuration>
