@@ -27,10 +27,17 @@ public class SecurityConfig {
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers(
                                 "/auth/register",
+                                "/auth/signup",
                                 "/auth/login",
+                                "/auth/refresh",
                                 "/auth/validate",
                                 "/auth/getToken",
+                                "/auth/forgot-password",
                                 "/auth/reset-password",
+                                "/auth/reset-password/**",
+                                "/auth/validate-reset-token",
+                                "/auth/verify-email",
+                                "/auth/resend-verification",
                                 "/auth/roles/**",
                                 "/auth/permissions/defaults/**",
                                 "/auth/permissions/**",

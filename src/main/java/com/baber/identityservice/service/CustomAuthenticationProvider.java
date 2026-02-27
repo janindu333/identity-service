@@ -31,7 +31,9 @@ public class CustomAuthenticationProvider implements AuthenticationProvider {
     @Override
     public Authentication authenticate(Authentication authentication) throws AuthenticationException {
         String usernameOrEmail = authentication.getName();
-        String password = authentication.getCredentials().toString();
+        String password = authentication.getCredentials() != null 
+            ? authentication.getCredentials().toString() 
+            : "";
 
         logger.info("Attempting authentication for: {}", usernameOrEmail);
 
@@ -43,17 +45,27 @@ public class CustomAuthenticationProvider implements AuthenticationProvider {
 
         UserCredential user = userByName.orElseGet(() -> userByEmail.orElse(null));
 
-        if (user != null && passwordEncoder.matches(password, user.getPassword())) {
-            logger.info("Authentication successful for user: {}", user.getName());
-            return new UsernamePasswordAuthenticationToken(
-                user.getName(),
-                password,
-                Collections.singletonList(new SimpleGrantedAuthority("ROLE_" + user.getRole().getName()))
-            );
-        } else {
-            logger.warn("Authentication failed for: {}", usernameOrEmail);
+        if (user == null) {
+            logger.warn("User not found for: {}", usernameOrEmail);
             throw new BadCredentialsException("Invalid username/email or password");
         }
+
+        // Validate password using PasswordEncoder
+        if (!passwordEncoder.matches(password, user.getPassword())) {
+            logger.warn("Invalid password for user: {}", usernameOrEmail);
+            throw new BadCredentialsException("Invalid username/email or password");
+        }
+
+        String roleName = (user.getRole() != null && user.getRole().getName() != null)
+            ? user.getRole().getName()
+            : "USER";
+
+        logger.info("Authentication successful for user: {}", user.getName());
+        return new UsernamePasswordAuthenticationToken(
+            user.getName(),
+            password,
+            Collections.singletonList(new SimpleGrantedAuthority("ROLE_" + roleName))
+        );
     }
 
     @Override

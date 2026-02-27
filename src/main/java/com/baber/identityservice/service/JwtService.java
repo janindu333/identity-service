@@ -11,8 +11,6 @@ import io.jsonwebtoken.security.Keys;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.security.core.userdetails.UserDetails;
-import org.springframework.stereotype.Component;
 import org.springframework.stereotype.Service;
 
 import java.security.Key;
@@ -103,6 +101,20 @@ public class JwtService {
         claims.put("role", role);
         claims.put("tokenType", "REFRESH");
         return createToken(claims, userName, 7 * 24 * 60 * 60 * 1000); // 7 days
+    }
+    
+    /**
+     * Generate refresh token with custom expiration time
+     * @param userName - username
+     * @param role - user role
+     * @param expirationMillis - expiration time in milliseconds
+     * @return JWT refresh token
+     */
+    public String generateRefreshToken(String userName, String role, long expirationMillis) {
+        Map<String, Object> claims = new HashMap<>();
+        claims.put("role", role);
+        claims.put("tokenType", "REFRESH");
+        return createToken(claims, userName, expirationMillis);
     }
 
     public String extractRole(String token) {

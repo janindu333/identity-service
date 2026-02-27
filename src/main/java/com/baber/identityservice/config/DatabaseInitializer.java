@@ -9,7 +9,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 
 @Component
-@Order(1) // Run before StartupConfig
+@Order(0) // Run first, before RolesAndPermissionsInitializer
 public class DatabaseInitializer implements CommandLineRunner {
     
     private static final Logger logger = LoggerFactory.getLogger(DatabaseInitializer.class);

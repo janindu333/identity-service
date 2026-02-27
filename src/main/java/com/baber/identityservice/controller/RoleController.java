@@ -54,12 +54,14 @@ public class RoleController {
     }
 
     @PostMapping("/add")
-    public BaseResponse<Role> createRole(@RequestBody AddRoleRequest role) {
+    public BaseResponse<String> createRole(@RequestBody AddRoleRequest role) {
         Optional<Role> createdRole = roleService.createRole(role);
-        return createdRole.map(value -> new BaseResponse<>(true, "Role created successfully", 0,
-                        null, value))
-                .orElseGet(() -> new BaseResponse<>(false, "Role already exists", 409,
-                        "Role with name " + role.getName() + " already exists", null));
+        if (createdRole.isPresent()) {
+            return new BaseResponse<>(true, "Role created successfully", 0, null, null);
+        } else {
+            return new BaseResponse<>(false, "Role already exists", 409,
+                    "Role with name " + role.getName() + " already exists", null);
+        }
     }
 
     @PutMapping("/{id}")
@@ -84,7 +86,7 @@ public class RoleController {
     }
 
     @PutMapping("/{roleId}/permissions")
-    public BaseResponse<Role> assignPermissionsToRole(
+    public BaseResponse<String> assignPermissionsToRole(
             @PathVariable int roleId,
             @RequestBody AssignPermissionsRequest request) {
         
@@ -95,10 +97,12 @@ public class RoleController {
 
         Optional<Role> updatedRole = roleService.assignPermissionsToRole(roleId, request.getPermissionIds());
         
-        return updatedRole.map(role -> new BaseResponse<>(true, "Permissions assigned successfully", 0,
-                        null, role))
-                .orElseGet(() -> new BaseResponse<>(false, "Role not found", 404,
-                        "Role with id " + roleId + " not found", null));
+        if (updatedRole.isPresent()) {
+            return new BaseResponse<>(true, "Permissions assigned successfully", 0, null, null);
+        } else {
+            return new BaseResponse<>(false, "Role not found", 404,
+                    "Role with id " + roleId + " not found", null);
+        }
     }
 
     @DeleteMapping("/{roleId}/permissions")

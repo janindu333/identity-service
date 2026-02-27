@@ -40,7 +40,7 @@ public class PermissionController {
     }
 
     @PostMapping("/add")
-    public BaseResponse<List<Permission>> createPermissions(@RequestBody 
+    public BaseResponse<String> createPermissions(@RequestBody 
     List<AddPermissionRequest> permissionRequests) {
         List<Permission> savedPermissions = permissionRequests.stream()
                 .filter(request -> {
@@ -58,7 +58,7 @@ public class PermissionController {
         if (savedPermissions.isEmpty()) {
             return new BaseResponse<>(false, "", 0, "All permissions already exist", null);
         } else {
-            return new BaseResponse<>(true, "Permissions processed", 0, null, savedPermissions);
+            return new BaseResponse<>(true, "Permissions processed", 0, null, null);
         }
     }
 
