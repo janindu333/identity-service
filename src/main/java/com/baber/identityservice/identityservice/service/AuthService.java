@@ -1,52 +1,66 @@
 package com.baber.identityservice.identityservice.service;
 
-import java.util.Optional;
-
 import com.baber.identityservice.identityservice.dto.AddLocationRequest;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.security.core.userdetails.UsernameNotFoundException;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 
 import com.baber.identityservice.identityservice.dto.BaseResponse;
 import com.baber.identityservice.identityservice.entity.UserCredential;
 import com.baber.identityservice.identityservice.repository.UserCredentialRepository;
+import reactor.core.publisher.Mono;
 @Service
 public class AuthService {
     @Autowired
     private UserCredentialRepository userCredentialRepository;
-
     @Autowired
     private PasswordEncoder passwordEncoder;
-
     @Autowired
     private JwtService jwtService;
-
-    public BaseResponse<String> saveUser(UserCredential userCredential) {
-
-        try {
-            Optional<UserCredential> existingUserByName = userCredentialRepository.findByName(userCredential.getName());
-            if (existingUserByName.isPresent()) {
-                return new BaseResponse<>(false, null, 0, "user name already exist",null);
-            } else {
-
-                Optional<UserCredential> existingUserByEmail = userCredentialRepository
-                        .findByEmail(userCredential.getEmail());
-                if (existingUserByEmail.isPresent()) {
-                    return new BaseResponse<>(false, null, 0, "user email already exist", null);
-
-                } else {
-                    userCredential.setPassword(passwordEncoder.encode(userCredential.getPassword()));
-                    userCredentialRepository.save(userCredential);
-                    return new BaseResponse<>(true, "user added", 0, null, null);
-
-                }
-            }
-        } catch (Exception e) {
-
-            e.printStackTrace();
-            return new BaseResponse<>(false, null, 0, "user added failed, please try again", null);
-        }
-
+    public Mono<BaseResponse<Object>> saveUser(UserCredential userCredential) {
+        return userCredentialRepository.findByName(userCredential.getName())
+                .flatMap(existingUser ->
+                        Mono.just(
+                        new BaseResponse<>(false, null, 0,
+                        "user name already exists", null)))
+                .switchIfEmpty(userCredentialRepository.findByEmail(userCredential.getEmail())
+                        .flatMap(existingUser -> {
+                            if (existingUser != null) {
+                                return Mono.just(new BaseResponse<>(false, null, 0,
+                                        "user email already exists", null));
+                            } else {
+                                // Encode the user's password before saving
+                                userCredential.setPassword(passwordEncoder.encode(userCredential.getPassword()));
+                                return userCredentialRepository.save(userCredential)
+                                        .map(savedUser -> new BaseResponse<>(true, "user added", 0,
+                                                null, null))
+                                        .onErrorResume(e -> {
+                                            e.printStackTrace(); // Consider replacing this with appropriate logging
+                                            return Mono.just(new BaseResponse<>(false, null, 0,
+                                                    "user addition failed: " + e.getMessage(), null));
+                                        });
+                            }
+                        })
+                        .switchIfEmpty(Mono.defer(() -> {
+                            // Encode the user's password before saving
+                            userCredential.setPassword(passwordEncoder.encode(userCredential.getPassword()));
+                            return userCredentialRepository.save(userCredential)
+                                    .map(savedUser ->
+                                            new BaseResponse<>(true, "user added", 0,
+                                            null, null))
+                                    .onErrorResume(e -> {
+                                        e.printStackTrace(); // Consider replacing this with appropriate logging
+                                        return Mono.just(new BaseResponse<>(false, null, 0,
+                                                "user addition failed: " + e.getMessage(), null));
+                                    });
+                        }))
+                )
+                .onErrorResume(e -> {
+                    e.printStackTrace(); // Consider replacing this with appropriate logging
+                    return Mono.just(new BaseResponse<>(false, null, 0,
+                            "user addition failed: " + e.getMessage(), null));
+                });
     }
     public String generateAccessToken(String username) {
         return jwtService.generateToken(username, 30 * 60 * 1000); // Set token expiration to 30 minutes
@@ -65,49 +79,64 @@ public class AuthService {
         return null; // Return null if the refresh token is invalid
     }
     public boolean validateToken(String token) {
-      
-        return jwtService.validateToken(token); 
-    }
-    public UserCredential findById(int id){
-        Optional<UserCredential> userCredential= userCredentialRepository.findById(id);
-        return userCredential.orElse(null);
-    }
 
-    public boolean resetPassword(int id, String password){
+        return jwtService.validateToken(token);
+    }
+    public Mono<UserCredential> findById(int id){
+        return userCredentialRepository.findById(id);
+    }
+    public Mono<Boolean> resetPassword(int id, String password) {
+        // Step 1: Retrieve the user from the database using the given ID
+        Mono<UserCredential> userMono = userCredentialRepository.findById(id);
+
+        // Step 2: Perform operations on the user asynchronously
+        return userMono.flatMap(user -> {
+            // Step 3: Update the password of the retrieved user
+            user.setPassword(passwordEncoder.encode(password));
+
+            // Step 4: Save the updated user back to the database
+            return userCredentialRepository.save(user)
+                    .thenReturn(true); // Return true after successful save
+        }).switchIfEmpty(
+                Mono.just(false)
+        ); // Return false if user not found
+    }
+    public Mono<Boolean> updateLocation(AddLocationRequest addLocationRequest){
 
         // Step 1: Retrieve the user from the database using the given ID
-        Optional<UserCredential> optionalUser = userCredentialRepository.findById(id);
+        Mono<UserCredential> userMono = userCredentialRepository.findById(addLocationRequest.getUserId());
 
-        // Check if the user exists with the given ID
-        if (optionalUser.isEmpty()) {
-            return false;
-        }
+        // Step 2: Perform operations on the user asynchronously
+        return userMono.flatMap(user -> {
+            // Check if the user exists with the given ID
+            if (user == null) {
+                return Mono.just(false);
+            }
 
-        UserCredential user = optionalUser.get();
+            // Step 3: Update the location of the retrieved user
+            user.setLatitude(addLocationRequest.getLatitude());
+            user.setLongitude(addLocationRequest.getLongitude());
 
-        // Step 2: Update the password of the retrieved user
-        user.setPassword(passwordEncoder.encode(password));
-
-        // Step 3: Save the updated user back to the database
-        userCredentialRepository.save(user);
-
-        return true;
+            // Step 4: Save the updated user back to the database
+            return userCredentialRepository.save(user).map(savedUser -> true);
+        }).defaultIfEmpty(false); // Return false if no user found
     }
-    public boolean updateLocation(AddLocationRequest addLocationRequest){
-
-        Optional<UserCredential> optionalUser = userCredentialRepository.findById(addLocationRequest.getUserId());
-
-        if (optionalUser.isEmpty()) {
-            return false;
-        }
-
-        UserCredential user = optionalUser.get();
-
-        user.setLatitude(addLocationRequest.getLatitude());
-        user.setLongitude(addLocationRequest.getLongitude());
-
-        userCredentialRepository.save(user);
-
-        return true;
+    public Mono<BaseResponse<UserCredential>> getUserCredentialByUsername(String username) {
+        return userCredentialRepository.findByName(username)
+                .flatMap(existingUser ->
+                        Mono.just(
+                        new BaseResponse<>(true, "User found", 0,
+                        null, existingUser)))
+                .switchIfEmpty(
+                        Mono.just(
+                        new BaseResponse<>(false, null, 0,
+                        "User not found with username: " + username, null)))
+                .onErrorResume(e -> {
+                    e.printStackTrace(); // Consider replacing this with appropriate logging
+                    return Mono.just(new BaseResponse<>(false, null, 0,
+                            "Failed to retrieve user: " + e.getMessage(), null));
+                });
     }
+
+
 }

@@ -1,30 +1,33 @@
 package com.baber.identityservice.identityservice.entity;
 
-import jakarta.persistence.Entity;
-import jakarta.persistence.GeneratedValue;
-import jakarta.persistence.GenerationType;
-import jakarta.persistence.Id;
-import lombok.AllArgsConstructor;
 import lombok.Getter;
-import lombok.NoArgsConstructor;
 import lombok.Setter;
+import org.springframework.data.annotation.Id;
+import org.springframework.data.relational.core.mapping.Table;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
+import org.springframework.security.core.userdetails.UserDetails;
 
-@Entity
-@AllArgsConstructor
-@NoArgsConstructor
+import java.util.Collection;
+import java.util.Collections;
+
 @Getter
 @Setter
+@Table("t_user_credentials")
 public class UserCredential {
 
     @Id
-    @GeneratedValue(strategy = GenerationType.IDENTITY)
-    private int id;
+    private Integer id;
     private String name;
     private String email;
     private String password;
-
+    private Long roleId;
+    private String phoneNumber;
     private String latitude;
-
     private String longitude;
 
+    public UserDetails toUserDetails() {
+        return new org.springframework.security.core.userdetails.User(
+                name, password, Collections.singleton(new SimpleGrantedAuthority("ADMIN"))
+        );
+    }
 }

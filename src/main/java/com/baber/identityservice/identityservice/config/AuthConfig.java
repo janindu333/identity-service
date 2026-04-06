@@ -1,52 +1,89 @@
 package com.baber.identityservice.identityservice.config;
 
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Configurable;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.security.authentication.AuthenticationManager;
-import org.springframework.security.authentication.AuthenticationProvider;
+import org.springframework.security.authentication.*;
 import org.springframework.security.authentication.dao.DaoAuthenticationProvider;
 import org.springframework.security.config.annotation.authentication.configuration.AuthenticationConfiguration;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
 import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
+import org.springframework.security.config.annotation.web.reactive.EnableWebFluxSecurity;
+import org.springframework.security.config.web.server.ServerHttpSecurity;
+import org.springframework.security.core.userdetails.ReactiveUserDetailsService;
 import org.springframework.security.core.userdetails.UserDetailsService;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.security.web.server.SecurityWebFilterChain;
 
- @Configuration
-@EnableWebSecurity
+@Configuration
+ @EnableWebFluxSecurity
 public class AuthConfig {
-    @Bean
-    public UserDetailsService userDetailsService(){
-        return new CustomUserDetailsService();
-    }
-    @Bean
-    public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
 
-        return http .csrf(AbstractHttpConfigurer::disable)
-        .authorizeHttpRequests(auth -> auth
-               .requestMatchers("/auth/register", "/auth/login", "/auth/validate",
-                       "/auth/getToken","/auth/reset-password","/auth/addLocation").permitAll()
-            .anyRequest().authenticated()
-        ) 
+
+
+//    @Bean
+//    public ReactiveUserDetailsService reactiveUserDetailsService() {
+//        return new CustomUserDetailsService();
+//    }
+
+//    @Bean
+//    public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
+//
+//        return http .csrf(AbstractHttpConfigurer::disable)
+//        .authorizeHttpRequests(auth -> auth
+//               .requestMatchers("/auth/register", "/auth/login", "/auth/validate",
+//                       "/auth/getToken","/auth/reset-password","/auth/addLocation","/roles/add").permitAll()
+//            .anyRequest().authenticated()
+//        )
+//                .build();
+//    }
+
+    @Bean
+    public SecurityWebFilterChain securityWebFilterChain(ServerHttpSecurity http) {
+        return http.csrf(csrf -> csrf.disable())
+                .authorizeExchange(exchanges -> exchanges
+                        .pathMatchers("/auth/register", "/auth/login", "/auth/validate",
+                                "/auth/getToken", "/auth/reset-password", "/auth/addLocation", "/roles/add").permitAll()
+                        .anyExchange().authenticated()
+                )
                 .build();
-
     }
+
     @Bean
     public PasswordEncoder passwordEncoder() {
         return new BCryptPasswordEncoder();
     }
+
+//    @Bean
+//    public AuthenticationProvider authenticationProvider(){
+//        DaoAuthenticationProvider authenticationProvider=new DaoAuthenticationProvider();
+//        authenticationProvider.setUserDetailsService(userDetailsService());
+//        authenticationProvider.setPasswordEncoder(passwordEncoder());
+//        return authenticationProvider;
+//    }
+
+//    @Bean
+//    public AuthenticationManager authenticationManager(AuthenticationConfiguration config) throws Exception {
+//        return config.getAuthenticationManager();
+//    }
     @Bean
-    public AuthenticationProvider authenticationProvider(){
-        DaoAuthenticationProvider authenticationProvider=new DaoAuthenticationProvider();
-        authenticationProvider.setUserDetailsService(userDetailsService());
-        authenticationProvider.setPasswordEncoder(passwordEncoder());
-        return authenticationProvider;
+    public ReactiveAuthenticationManager reactiveAuthenticationManager(
+            ReactiveUserDetailsService userDetailsService, PasswordEncoder passwordEncoder) {
+        UserDetailsRepositoryReactiveAuthenticationManager authenticationManager =
+                new UserDetailsRepositoryReactiveAuthenticationManager(userDetailsService);
+        authenticationManager.setPasswordEncoder(passwordEncoder);
+        return authenticationManager;
     }
-    @Bean
-    public AuthenticationManager authenticationManager(AuthenticationConfiguration config) throws Exception {
-        return config.getAuthenticationManager();
-    }
+
+//    @Bean
+//    public DaoAuthenticationProvider daoAuthenticationProvider() {
+//        DaoAuthenticationProvider authenticationProvider = new DaoAuthenticationProvider();
+//        authenticationProvider.setUserDetailsService(reactiveUserDetailsService());
+//        authenticationProvider.setPasswordEncoder(passwordEncoder());
+//        return authenticationProvider;
+//    }
 }
