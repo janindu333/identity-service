@@ -25,3 +25,5 @@ spec:
           env:
             - name: SPRING_PROFILES_ACTIVE
               value: "k8s"
+            - name: REDIS_HOST
+              value: "redis-service"
