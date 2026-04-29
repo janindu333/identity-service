@@ -15,7 +15,7 @@ import io.swagger.v3.oas.models.servers.Server;
 @Configuration
 public class SwaggerConfig {
 
-    @Value("${api.gateway.url:http://localhost:8080}")
+    @Value("${api.gateway.url:/}")
     private String apiGatewayUrl;
 
     @Bean

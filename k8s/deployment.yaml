@@ -27,3 +27,42 @@ spec:
               value: "k8s"
             - name: REDIS_HOST
               value: "redis-service"
+            - name: DB_HOST
+              value: "mysql-service"
+            - name: DB_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: saloon-secrets
+                  key: db-username
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: saloon-secrets
+                  key: db-root-password
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: saloon-secrets
+                  key: jwt-secret
+            - name: JWT_ISSUER_URI
+              value: "http://host.docker.internal:9090/realms/saloon2"
+            - name: API_GATEWAY_URL
+              value: "/"
+            - name: MANAGEMENT_HEALTH_MAIL_ENABLED
+              value: "false"
+          startupProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8082
+            initialDelaySeconds: 60
+            timeoutSeconds: 5
+            failureThreshold: 180
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8082
+            initialDelaySeconds: 10
+            timeoutSeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
