@@ -1,19 +1,20 @@
 package com.baber.identityservice.config;
 
-import com.baber.identityservice.service.CustomAuthenticationProvider;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.security.authentication.AuthenticationManager;
-import org.springframework.security.authentication.AuthenticationProvider;
 import org.springframework.security.config.annotation.authentication.configuration.AuthenticationConfiguration;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
 import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
 import org.springframework.security.config.http.SessionCreationPolicy;
+import org.springframework.security.oauth2.jwt.Jwt;
+import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationConverter;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.web.SecurityFilterChain;
-import org.springframework.security.config.Customizer;
+
+import java.util.Collection;
 
 @Configuration
 @EnableWebSecurity
@@ -38,33 +39,38 @@ public class SecurityConfig {
                                 "/auth/validate-reset-token",
                                 "/auth/verify-email",
                                 "/auth/resend-verification",
-                                "/auth/roles/**",
-                                "/auth/permissions/defaults/**",
-                                "/auth/permissions/**",
                                 "/v3/api-docs/**",
                                 "/swagger-ui/**",
                                 "/swagger-ui.html",
                                 "/actuator/health",
                                 "/actuator/info",
-                                "/error",
-                                "/auth/admin/tokens/**" // Added for token blacklist endpoints
+                                "/error"
                         )
-                        .permitAll() 
+                        .permitAll()
+                        .requestMatchers("/auth/admin", "/auth/admin/**").hasRole("ADMIN")
+                        .requestMatchers("/auth/admin/tokens/**").hasRole("ADMIN")
+                        .requestMatchers("/auth/roles/**").hasRole("ADMIN")
+                        .requestMatchers("/auth/permissions/**").hasRole("ADMIN")
                         .anyRequest().authenticated())
-                .oauth2ResourceServer(oauth2 -> oauth2.jwt(Customizer.withDefaults()))
+                .oauth2ResourceServer(oauth2 -> oauth2.jwt(jwt -> jwt.jwtAuthenticationConverter(jwtAuthenticationConverter())))
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
-                .authenticationProvider(authenticationProvider())
                 .build();
+    }
+
+    @Bean
+    public JwtAuthenticationConverter jwtAuthenticationConverter() {
+        JwtAuthenticationConverter converter = new JwtAuthenticationConverter();
+        converter.setJwtGrantedAuthoritiesConverter(this::extractAuthorities);
+        return converter;
+    }
+
+    private Collection<org.springframework.security.core.GrantedAuthority> extractAuthorities(Jwt jwt) {
+        return KeycloakRoleExtractor.extract(jwt);
     }
 
     @Bean
     public PasswordEncoder passwordEncoder() {
         return new BCryptPasswordEncoder();
-    }
-
-    @Bean
-    public AuthenticationProvider authenticationProvider() {
-        return new CustomAuthenticationProvider();
     }
 
     @Bean

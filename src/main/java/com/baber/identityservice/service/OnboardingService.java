@@ -5,7 +5,6 @@ import com.baber.identityservice.entity.UserCredential;
 import com.baber.identityservice.enums.OnboardingStep;
 import com.baber.identityservice.repository.UserCredentialRepository;
 import com.baber.identityservice.dto.OwnerSalonSummaryDto;
-import com.baber.identityservice.service.SalonClient;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
@@ -38,6 +37,14 @@ public class OnboardingService {
      * Get onboarding status for a user
      */
     public OnboardingStatusResponse getOnboardingStatus(Long userId) {
+        return getOnboardingStatus(userId, null, null);
+    }
+
+    /**
+     * Get onboarding status for a user, optionally using Keycloak-sourced
+     * identity signals to avoid relying on local auth columns.
+     */
+    public OnboardingStatusResponse getOnboardingStatus(Long userId, Boolean emailVerifiedOverride, Boolean isOwnerOverride) {
         Optional<UserCredential> userOpt = userCredentialRepository.findById(userId);
         if (userOpt.isEmpty()) {
             return null;
@@ -47,7 +54,8 @@ public class OnboardingService {
         Map<String, Boolean> completedSteps = parseOnboardingStatus(user.getOnboardingStatus());
         
         // Auto-complete email verification if user's email is verified
-        if (user.getEmailVerified() && !completedSteps.getOrDefault("email_verification", false)) {
+        boolean emailVerified = emailVerifiedOverride != null ? emailVerifiedOverride : false;
+        if (emailVerified && !completedSteps.getOrDefault("email_verification", false)) {
             completedSteps.put("email_verification", true);
             // Save updated status
             saveOnboardingStatus(user, completedSteps);
@@ -55,8 +63,7 @@ public class OnboardingService {
 
         // If this is an owner, sync onboarding steps from saloon-service (salon exists, business hours, services, staff invite).
         try {
-            String roleName = user.getRole() != null ? user.getRole().getName() : null;
-            boolean isOwner = roleName != null && "owner".equalsIgnoreCase(roleName);
+            boolean isOwner = isOwnerOverride != null ? isOwnerOverride : false;
 
             if (isOwner) {
                 Optional<OwnerSalonSummaryDto> summaryOpt = salonClient.getOwnerSalonSummary(user.getId());

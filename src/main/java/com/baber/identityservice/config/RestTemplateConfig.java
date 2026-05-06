@@ -19,5 +19,10 @@ public class RestTemplateConfig {
     public RestTemplate restTemplate() {
         return new RestTemplate();
     }
+
+    @Bean(name = "keycloakRestTemplate")
+    public RestTemplate keycloakRestTemplate() {
+        return new RestTemplate();
+    }
 }
 

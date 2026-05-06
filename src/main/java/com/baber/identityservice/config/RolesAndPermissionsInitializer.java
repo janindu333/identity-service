@@ -1,9 +1,7 @@
 package com.baber.identityservice.config;
 
 import com.baber.identityservice.entity.Permission;
-import com.baber.identityservice.entity.Role;
 import com.baber.identityservice.repository.PermissionRepository;
-import com.baber.identityservice.repository.RoleRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -14,34 +12,28 @@ import org.springframework.stereotype.Component;
 import java.util.*;
 
 @Component
-@Order(1) // Run after DatabaseInitializer (Order 0), before StartupConfig (Order 2)
+@Order(2) // Run after KeycloakRoleSync (Order 1), before StartupConfig (Order 3+)
 public class RolesAndPermissionsInitializer implements CommandLineRunner {
     
     private static final Logger logger = LoggerFactory.getLogger(RolesAndPermissionsInitializer.class);
-    
-    @Autowired
-    private RoleRepository roleRepository;
     
     @Autowired
     private PermissionRepository permissionRepository;
     
     @Override
     public void run(String... args) throws Exception {
-        logger.info("Initializing roles and permissions...");
+        logger.info("Initializing permissions (roles are synced from Keycloak)...");
         
         try {
             // Create all permissions first
-            Map<String, Permission> permissions = createAllPermissions();
+            createAllPermissions();
             
-            // Create all roles and assign permissions
-            createRolesWithPermissions(permissions);
-            
-            logger.info("Roles and permissions initialization completed successfully!");
+            logger.info("Permission initialization completed successfully!");
             
         } catch (Exception e) {
-            logger.error("Failed to initialize roles and permissions", e);
+            logger.error("Failed to initialize permissions", e);
             // Don't throw - allow service to start even if initialization fails
-            logger.warn("Service will continue without role/permission initialization.");
+            logger.warn("Service will continue without permission initialization.");
         }
     }
     
@@ -175,186 +167,5 @@ public class RolesAndPermissionsInitializer implements CommandLineRunner {
         Permission saved = permissionRepository.save(permission);
         logger.info("Created permission: {}", name);
         return saved;
-    }
-    
-    private void createRolesWithPermissions(Map<String, Permission> permissions) {
-        // Create Super Admin Role
-        createRoleWithPermissions(
-            "super_admin",
-            "Super Administrator with full platform access",
-            Arrays.asList(
-                permissions.get("view_all_salons"),
-                permissions.get("create_edit_delete_any_salon"),
-                permissions.get("manage_all_users"),
-                permissions.get("access_all_appointments"),
-                permissions.get("view_platform_analytics"),
-                permissions.get("manage_subscription_plans"),
-                permissions.get("handle_support_tickets"),
-                permissions.get("suspend_activate_salon_accounts"),
-                permissions.get("configure_platform_settings"),
-                permissions.get("access_system_logs"),
-                permissions.get("moderate_reviews"),
-                permissions.get("send_platform_notifications")
-            )
-        );
-        
-        // Create Owner Role
-        createRoleWithPermissions(
-            "owner",
-            "Salon owner with full control over their salon(s)",
-            Arrays.asList(
-                permissions.get("create_salon_locations"),
-                permissions.get("edit_delete_own_salons"),
-                permissions.get("view_salon_settings"),
-                permissions.get("manage_business_hours"),
-                permissions.get("create_edit_delete_services"),
-                permissions.get("invite_managers"),
-                permissions.get("invite_staff"),
-                permissions.get("invite_receptionists"),
-                permissions.get("remove_managers_staff_receptionists"),
-                permissions.get("view_all_appointments"),
-                permissions.get("create_edit_cancel_appointments"),
-                permissions.get("view_all_client_data"),
-                permissions.get("export_client_database"),
-                permissions.get("view_financial_reports"),
-                permissions.get("access_detailed_analytics"),
-                permissions.get("configure_payment_settings"),
-                permissions.get("set_booking_policies"),
-                permissions.get("manage_salon_branding"),
-                permissions.get("configure_notification_preferences"),
-                permissions.get("view_staff_performance_metrics"),
-                permissions.get("manage_subscription_billing"),
-                permissions.get("set_staff_commissions"),
-                permissions.get("view_respond_reviews")
-            )
-        );
-        
-        // Create Manager Role
-        createRoleWithPermissions(
-            "manager",
-            "Salon manager with management capabilities for assigned locations",
-            Arrays.asList(
-                permissions.get("view_assigned_salon_locations"),
-                permissions.get("edit_salon_details"),
-                permissions.get("manage_business_hours_assigned"),
-                permissions.get("edit_services_pricing"),
-                permissions.get("invite_staff"),
-                permissions.get("invite_receptionists"),
-                permissions.get("remove_staff_receptionists"),
-                permissions.get("view_appointments_assigned"),
-                permissions.get("create_edit_cancel_appointments"),
-                permissions.get("manage_staff_schedules"),
-                permissions.get("view_client_database_assigned"),
-                permissions.get("add_client_notes"),
-                permissions.get("view_limited_financial_reports"),
-                permissions.get("process_walk_in_bookings"),
-                permissions.get("handle_customer_complaints"),
-                permissions.get("view_staff_availability"),
-                permissions.get("approve_reject_time_off")
-            )
-        );
-        
-        // Create Staff Role
-        createRoleWithPermissions(
-            "staff",
-            "Salon staff member with appointment and client management capabilities",
-            Arrays.asList(
-                permissions.get("view_own_schedule"),
-                permissions.get("accept_decline_appointment_requests"),
-                permissions.get("mark_appointments_completed"),
-                permissions.get("mark_appointments_no_show"),
-                permissions.get("block_personal_time_off"),
-                permissions.get("set_personal_availability"),
-                permissions.get("view_assigned_client_details"),
-                permissions.get("add_service_notes"),
-                permissions.get("view_client_service_history"),
-                permissions.get("view_own_earnings"),
-                permissions.get("update_own_profile"),
-                permissions.get("view_own_performance_metrics"),
-                permissions.get("receive_booking_notifications"),
-                permissions.get("view_other_staff_schedules_readonly")
-            )
-        );
-        
-        // Create Receptionist Role
-        createRoleWithPermissions(
-            "receptionist",
-            "Salon receptionist with booking and client management capabilities",
-            Arrays.asList(
-                permissions.get("view_all_staff_schedules_readonly"),
-                permissions.get("book_appointments"),
-                permissions.get("create_walk_in_client_accounts"),
-                permissions.get("cancel_reschedule_appointments"),
-                permissions.get("process_payments"),
-                permissions.get("check_in_clients"),
-                permissions.get("view_daily_appointment_list"),
-                permissions.get("view_client_database"),
-                permissions.get("add_edit_client_contact_info"),
-                permissions.get("send_appointment_reminders"),
-                permissions.get("handle_phone_inquiries"),
-                permissions.get("print_receipts_invoices"),
-                permissions.get("view_service_menu_pricing"),
-                permissions.get("apply_discounts")
-            )
-        );
-        
-        // Create Client Role
-        List<Permission> clientPermissions = Arrays.asList(
-            permissions.get("browse_search_salons"),
-            permissions.get("view_salon_details_services"),
-            permissions.get("view_staff_profiles_availability"),
-            permissions.get("book_appointments_online"),
-            permissions.get("view_own_upcoming_appointments"),
-            permissions.get("view_own_past_appointments"),
-            permissions.get("cancel_appointments_within_policy"),
-            permissions.get("reschedule_appointments_within_policy"),
-            permissions.get("add_appointments_to_calendar"),
-            permissions.get("receive_booking_confirmations"),
-            permissions.get("receive_appointment_reminders"),
-            permissions.get("view_own_service_history"),
-            permissions.get("save_favorite_salons"),
-            permissions.get("save_favorite_staff"),
-            permissions.get("leave_reviews_ratings"),
-            permissions.get("upload_profile_photo"),
-            permissions.get("manage_payment_methods"),
-            permissions.get("view_receipts_invoices"),
-            permissions.get("update_own_contact_info"),
-            permissions.get("set_notification_preferences"),
-            permissions.get("request_appointment_changes")
-        );
-        
-        createRoleWithPermissions(
-            "client",
-            "Client with booking and profile management capabilities",
-            clientPermissions
-        );
-        
-        // Create Customer Role (alias for backward compatibility)
-        createRoleWithPermissions(
-            "Customer",
-            "Customer role (same as client, for backward compatibility)",
-            clientPermissions
-        );
-    }
-    
-    private void createRoleWithPermissions(String roleName, String description, List<Permission> permissionList) {
-        Optional<Role> existingRole = roleRepository.findByName(roleName);
-        Role role;
-        
-        if (existingRole.isPresent()) {
-            role = existingRole.get();
-            logger.debug("Role '{}' already exists, updating permissions", roleName);
-        } else {
-            role = new Role();
-            role.setName(roleName);
-            role.setDescription(description);
-            role = roleRepository.save(role);
-            logger.info("Created role: {}", roleName);
-        }
-        
-        // Update permissions
-        role.setPermissions(new ArrayList<>(permissionList));
-        roleRepository.save(role);
-        logger.info("Assigned {} permissions to role: {}", permissionList.size(), roleName);
     }
 }

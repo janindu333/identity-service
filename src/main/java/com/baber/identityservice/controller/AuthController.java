@@ -17,9 +17,8 @@ import com.baber.identityservice.service.AuthService;
 import com.baber.identityservice.service.RateLimiterService;
 import com.baber.identityservice.service.RateLimiterService.RateLimitResult;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.security.authentication.AuthenticationManager;
-import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.Authentication;
+import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.web.bind.annotation.*;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.security.SecurityRequirement;
@@ -36,8 +35,6 @@ public class AuthController {
     private static final ServiceLogger logger = new ServiceLogger(AuthController.class);
     @Autowired
     private AuthService service;
-    @Autowired
-    private AuthenticationManager authenticationManager;
     @Autowired
     private RateLimiterService rateLimiterService;
     @Autowired
@@ -114,37 +111,23 @@ public class AuthController {
         }
 
         try {
-            Authentication authenticate = authenticationManager.authenticate(
-                new UsernamePasswordAuthenticationToken(authRequest.getUsernameOrEmail(), authRequest.getPassword()));
+            boolean rememberMe = authRequest.getRememberMe() != null && authRequest.getRememberMe();
+            AuthService.KeycloakLoginResult keycloakLoginResult =
+                    service.loginWithKeycloak(authRequest.getUsernameOrEmail(), authRequest.getPassword());
 
-            if (authenticate.isAuthenticated()) {
-                // Generate access token (always 2 hours)
-                String accessToken = service.generateAccessTokenByUsernameOrEmail(authRequest.getUsernameOrEmail());
-                
-                // Generate refresh token with expiration based on rememberMe flag
-                boolean rememberMe = authRequest.getRememberMe() != null && authRequest.getRememberMe();
-                String refreshToken = service.generateRefreshTokenByUsernameOrEmail(
-                    authRequest.getUsernameOrEmail(), rememberMe);
-                
-                // Set refresh token in HTTP-only cookie
-                setRefreshTokenCookie(response, refreshToken, rememberMe);
-                
-                // Get user and onboarding status for owners
-                TokenResponse tokenResponse = service.createLoginResponse(accessToken, authRequest.getUsernameOrEmail());
-                
-                logger.info("API: /login, Method: POST, Status: 200, Response Time: "
-                        + (System.currentTimeMillis() - startTime) + "ms, RememberMe: " + rememberMe);
-                return new BaseResponse<>(true, null, 0, null, tokenResponse);
-            } else {
-                logger.error("API: /login, Method: POST, Status: 401, Response Time: "
-                        + (System.currentTimeMillis() - startTime) + "ms");
-                return new BaseResponse<>(false, null, 0, "Invalid password", null);
-            }
+            setRefreshTokenCookie(response, keycloakLoginResult.refreshToken(), rememberMe);
+
+            logger.info("API: /login, Method: POST, Status: 200, Response Time: "
+                    + (System.currentTimeMillis() - startTime) + "ms, RememberMe: " + rememberMe);
+            return new BaseResponse<>(true, null, 0, null, keycloakLoginResult.tokenResponse());
+        } catch (org.springframework.web.client.HttpClientErrorException.Unauthorized e) {
+            logger.warn("API: /login, Method: POST, Status: 401, Response Time: "
+                    + (System.currentTimeMillis() - startTime) + "ms");
+            return new BaseResponse<>(false, null, 401, "User or password is not matched", null);
         } catch (Exception e) {
             logger.error("API: /login, Method: POST, Status: 500, Response Time: "
                     + (System.currentTimeMillis() - startTime) + "ms, Error: " + e.getMessage());
-            e.printStackTrace();
-            return new BaseResponse<>(false, null, 0, "User or password is not matched", null);
+            return new BaseResponse<>(false, null, 500, "Login failed at identity provider", null);
         }
     }
     
@@ -180,10 +163,10 @@ public class AuthController {
     public BaseResponse<String> getAccessTokenByRefreshToken(@RequestParam("refreshToken") String refreshToken) {
         logger.apiRequest("Refresh token request received (legacy endpoint)");
         if (refreshToken != null && !refreshToken.isEmpty()) {
-            String accessToken = service.getAccessTokenByRefreshToken(refreshToken);
-            if (accessToken != null) {
+            AuthService.KeycloakLoginResult refreshed = service.refreshWithKeycloak(refreshToken, null);
+            if (refreshed != null && refreshed.tokenResponse() != null) {
                 logger.info("Access token generated successfully from refresh token");
-                return new BaseResponse<>(true, "Success", 0, null, accessToken);
+                return new BaseResponse<>(true, "Success", 0, null, refreshed.tokenResponse().getAccessToken());
             } else {
                 logger.warn("Invalid refresh token provided");
                 return new BaseResponse<>(false, null, 0, "Refresh token is not valid", null);
@@ -225,12 +208,15 @@ public class AuthController {
         }
         
         // Generate new access token
-        String accessToken = service.getAccessTokenByRefreshToken(refreshToken);
-        
-        if (accessToken != null) {
+        AuthService.KeycloakLoginResult refreshed = service.refreshWithKeycloak(refreshToken, null);
+        if (refreshed != null && refreshed.tokenResponse() != null) {
             logger.info("Access token generated successfully from cookie refresh token");
-            TokenResponse tokenResponse = new TokenResponse(accessToken, 7200L); // 2 hours
-            return new BaseResponse<>(true, null, 0, null, tokenResponse);
+            // Rotate refresh token cookie if a new refresh token is returned by Keycloak
+            String newRefreshToken = refreshed.refreshToken();
+            if (newRefreshToken != null && !newRefreshToken.isBlank()) {
+                setRefreshTokenCookie(response, newRefreshToken, false);
+            }
+            return new BaseResponse<>(true, null, 0, null, refreshed.tokenResponse());
         } else {
             logger.warn("Invalid refresh token from cookie");
             return new BaseResponse<>(false, null, 0, "Refresh token is not valid or expired", null);
@@ -428,10 +414,32 @@ public class AuthController {
      */
     @Operation(security = { @SecurityRequirement(name = "bearerAuth") })
     @GetMapping("/onboarding/status")
-    public BaseResponse<OnboardingStatusResponse> getOnboardingStatus() {
+    public BaseResponse<OnboardingStatusResponse> getOnboardingStatus(Authentication authentication) {
         logger.apiRequest("Get onboarding status requested");
-        // Note: User ID should be extracted from JWT token in a real implementation
-        // For now, this endpoint structure is ready - needs user context extraction
-        return new BaseResponse<>(false, null, 0, "Endpoint needs user context implementation", null);
+        if (authentication == null || !(authentication.getPrincipal() instanceof Jwt jwt)) {
+            return new BaseResponse<>(false, null, 401, "Unauthorized", null);
+        }
+
+        String keycloakUserId = jwt.getSubject();
+        String usernameOrEmail = jwt.getClaimAsString("preferred_username");
+        if (usernameOrEmail == null || usernameOrEmail.isBlank()) {
+            usernameOrEmail = jwt.getClaimAsString("email");
+        }
+        if ((usernameOrEmail == null || usernameOrEmail.isBlank()) &&
+                (keycloakUserId == null || keycloakUserId.isBlank())) {
+            usernameOrEmail = jwt.getSubject();
+        }
+
+        if ((usernameOrEmail == null || usernameOrEmail.isBlank()) &&
+                (keycloakUserId == null || keycloakUserId.isBlank())) {
+            return new BaseResponse<>(false, null, 400, "Unable to resolve user identity from token", null);
+        }
+
+        OnboardingStatusResponse status = service.getOnboardingStatusForUser(keycloakUserId, usernameOrEmail);
+        if (status == null) {
+            return new BaseResponse<>(false, null, 404, "User not found", null);
+        }
+
+        return new BaseResponse<>(true, "Onboarding status fetched successfully", 0, null, status);
     }
 }
