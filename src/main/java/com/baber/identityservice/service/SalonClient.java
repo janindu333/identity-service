@@ -2,6 +2,8 @@ package com.baber.identityservice.service;
 
 import com.baber.identityservice.config.ServiceLogger;
 import com.baber.identityservice.dto.OwnerSalonSummaryDto;
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestTemplate;
@@ -22,8 +24,11 @@ public class SalonClient {
 
     private final RestTemplate restTemplate;
 
+    @Value("${saloon.service.url:http://saloon-service:8083}")
+    private String saloonServiceUrl;
+
     @Autowired
-    public SalonClient(RestTemplate restTemplate) {
+    public SalonClient(@Qualifier("internalServiceRestTemplate") RestTemplate restTemplate) {
         this.restTemplate = restTemplate;
     }
 
@@ -35,8 +40,7 @@ public class SalonClient {
      */
     public String getSalonPublicIdForOwner(Long ownerId) {
         try {
-            // Uses Eureka service ID "SALOON-SERVICE" (matches existing config)
-            String url = "http://SALOON-SERVICE/api/saloon/owner/{ownerId}/summary";
+            String url = saloonServiceUrl + "/api/saloon/owner/{ownerId}/summary";
             @SuppressWarnings("unchecked")
             Map<String, Object> response = restTemplate.getForObject(url, Map.class, ownerId);
 
@@ -70,7 +74,7 @@ public class SalonClient {
      */
     public Optional<OwnerSalonSummaryDto> getOwnerSalonSummary(Long ownerId) {
         try {
-            String url = "http://SALOON-SERVICE/api/saloon/owner/{ownerId}/summary";
+            String url = saloonServiceUrl + "/api/saloon/owner/{ownerId}/summary";
             @SuppressWarnings("unchecked")
             Map<String, Object> response = restTemplate.getForObject(url, Map.class, ownerId);
 

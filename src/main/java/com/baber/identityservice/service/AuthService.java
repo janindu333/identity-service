@@ -227,8 +227,8 @@ public class AuthService {
         return jwtService.generateAccessToken(usernameOrEmail, "user", user.getId());
     }
 
-    public KeycloakLoginResult loginWithKeycloak(String usernameOrEmail, String password) {
-        KeycloakService.TokenGrantResponse grant = keycloakService.login(usernameOrEmail, password);
+    public KeycloakLoginResult loginWithKeycloak(String usernameOrEmail, String password, boolean rememberMe) {
+        KeycloakService.TokenGrantResponse grant = keycloakService.login(usernameOrEmail, password, rememberMe);
         TokenResponse tokenResponse = createLoginResponse(grant.accessToken(), usernameOrEmail);
         tokenResponse.setExpiresIn(grant.expiresIn());
         return new KeycloakLoginResult(tokenResponse, grant.refreshToken());

@@ -53,19 +53,53 @@ public class KeycloakService {
     @Value("${keycloak.admin-client-secret:${keycloak.client-secret}}")
     private String adminClientSecret;
 
+    /**
+     * When true, login with {@code rememberMe} requests Keycloak {@code scope=openid offline_access}
+     * so refresh tokens follow offline-session rules (long-lived until revoked).
+     * The Keycloak client must allow the {@code offline_access} client scope.
+     */
+    @Value("${keycloak.remember-me-offline-access:true}")
+    private boolean rememberMeOfflineAccess;
+
     public KeycloakService(@Qualifier("keycloakRestTemplate") RestTemplate restTemplate) {
         this.restTemplate = restTemplate;
     }
 
     public TokenGrantResponse login(String username, String password) {
+        return login(username, password, false);
+    }
+
+    /**
+     * @param rememberMe if true and {@link #rememberMeOfflineAccess} is enabled, requests {@code offline_access} scope
+     */
+    public TokenGrantResponse login(String username, String password, boolean rememberMe) {
+        MultiValueMap<String, String> form = buildResourceOwnerPasswordForm(username, password, rememberMe);
+        try {
+            return requestToken(form);
+        } catch (HttpClientErrorException e) {
+            if (rememberMe && rememberMeOfflineAccess && e.getStatusCode() == HttpStatus.BAD_REQUEST) {
+                String body = e.getResponseBodyAsString() != null ? e.getResponseBodyAsString() : "";
+                String lower = body.toLowerCase();
+                if (lower.contains("scope") || lower.contains("offline")) {
+                    log.warn("Keycloak rejected offline_access for this client; retrying login without offline scope. Hint: add client scope 'offline_access' in Keycloak admin.");
+                    return login(username, password, false);
+                }
+            }
+            throw e;
+        }
+    }
+
+    private MultiValueMap<String, String> buildResourceOwnerPasswordForm(String username, String password, boolean rememberMe) {
         MultiValueMap<String, String> form = new LinkedMultiValueMap<>();
         form.add("grant_type", "password");
         form.add("client_id", clientId);
         form.add("client_secret", clientSecret);
         form.add("username", username);
         form.add("password", password);
-
-        return requestToken(form);
+        if (rememberMe && rememberMeOfflineAccess) {
+            form.add("scope", "openid offline_access");
+        }
+        return form;
     }
 
     public TokenGrantResponse refresh(String refreshToken) {

@@ -94,10 +94,9 @@ public class OnboardingService {
         } catch (Exception e) {
             logger.warn("Failed to sync onboarding steps from saloon-service for userId={}", userId, e);
         }
-        
-        // Ensure optional payment step key is always present in the map
-        completedSteps.putIfAbsent("payment_setup", false);
-        
+
+        normalizeCompletedStepsMap(completedSteps);
+
         // Calculate statistics
         int totalRequired = 0;
         int completedRequired = 0;
@@ -195,6 +194,20 @@ public class OnboardingService {
         completeOnboardingStep(userId, "salon_creation");
     }
     
+    /**
+     * Every defined onboarding step appears explicitly in API responses (true/false).
+     * Adds {@code staff_invite} as an alias of {@code staff_invitation} for older clients.
+     */
+    private void normalizeCompletedStepsMap(Map<String, Boolean> completedSteps) {
+        for (OnboardingStep step : OnboardingStep.values()) {
+            completedSteps.putIfAbsent(step.getKey(), false);
+        }
+        boolean staffDone = Boolean.TRUE.equals(completedSteps.get("staff_invitation"))
+                || Boolean.TRUE.equals(completedSteps.get("staff_invite"));
+        completedSteps.put("staff_invitation", staffDone);
+        completedSteps.put("staff_invite", staffDone);
+    }
+
     /**
      * Parse onboarding status JSON string to Map
      */
