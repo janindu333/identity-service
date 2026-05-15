@@ -85,7 +85,7 @@ public class AuthService {
             // Determine role to assign in Keycloak
             Role userRole;
             if (request.getRole() != null) {
-                Optional<Role> requestedRole = roleRepository.findById(request.getRole().longValue());
+                Optional<Role> requestedRole = roleRepository.findById(request.getRole().intValue());
                 if (requestedRole.isPresent()) {
                     userRole = requestedRole.get();
                 } else {
@@ -93,7 +93,7 @@ public class AuthService {
                 }
             } else {
                 // Default to Client/Customer role (ID: 7 based on specification)
-                Optional<Role> defaultRole = roleRepository.findByName("Customer");
+                Optional<Role> defaultRole = roleRepository.findByName("customer");
                 if (defaultRole.isPresent()) {
                     userRole = defaultRole.get();
                 } else {
@@ -107,12 +107,18 @@ public class AuthService {
             boolean isOwner = "owner".equals(normalizedRoleName);
             boolean emailVerified = !isOwner;
 
-            // Duplicate email check in Keycloak
-            KeycloakService.KeycloakUserProfile existingKeycloakUser = keycloakService.findUserByEmail(request.getEmail());
+            // Duplicate check in Keycloak (email and username — signup uses username = email)
+            String requestedEmail = request.getEmail() == null ? "" : request.getEmail().trim();
+            KeycloakService.KeycloakUserProfile existingKeycloakUser = keycloakService.findUserByEmail(requestedEmail);
+            if (existingKeycloakUser == null) {
+                existingKeycloakUser = keycloakService.findUserByUsername(requestedEmail);
+            }
             if (existingKeycloakUser != null) {
-                String requestedEmail = request.getEmail() == null ? "" : request.getEmail().trim();
                 String keycloakEmail = existingKeycloakUser.email() == null ? "" : existingKeycloakUser.email().trim();
-                if (requestedEmail.equalsIgnoreCase(keycloakEmail)) {
+                String keycloakUsername = existingKeycloakUser.username() == null ? "" : existingKeycloakUser.username().trim();
+                boolean sameEmail = requestedEmail.equalsIgnoreCase(keycloakEmail);
+                boolean sameUsername = requestedEmail.equalsIgnoreCase(keycloakUsername);
+                if (sameEmail || sameUsername) {
                     UserCredential existingLocal = ensureLocalUserProfile(existingKeycloakUser.id());
                     boolean isOwnerInKeycloak = existingKeycloakUser.realmRoles() != null
                             && existingKeycloakUser.realmRoles().stream().anyMatch(r -> "owner".equalsIgnoreCase(r));
@@ -125,10 +131,13 @@ public class AuthService {
                                 null
                         );
                     }
-                    return new RegistrationResult(false, null, 409, "User email already exists");
+                    return new RegistrationResult(false, null, 409,
+                            "An account already exists with this email or username (Keycloak user id: "
+                                    + existingKeycloakUser.id() + ").");
                 }
-                logger.warn("Ignoring Keycloak user hit for non-matching email. requested=" + requestedEmail
-                        + ", keycloak=" + keycloakEmail + ", userId=" + existingKeycloakUser.id());
+                logger.warn("Ignoring Keycloak user hit for non-matching identifiers. requested=" + requestedEmail
+                        + ", keycloakEmail=" + keycloakEmail + ", keycloakUsername=" + keycloakUsername
+                        + ", userId=" + existingKeycloakUser.id());
             }
 
             String keycloakUserId;
@@ -144,8 +153,11 @@ public class AuthService {
                 );
             } catch (HttpClientErrorException e) {
                 if (e.getStatusCode().value() == HttpStatus.CONFLICT.value()) {
-                    logger.warn("User email already exists in Keycloak: " + request.getEmail());
-                    return new RegistrationResult(false, null, 409, "User email already exists");
+                    String body = e.getResponseBodyAsString();
+                    logger.warn("Keycloak CONFLICT on signup for " + request.getEmail() + ": " + body);
+                    return new RegistrationResult(false, null, 409,
+                            "Account already exists in identity provider (email or username may already be in use). "
+                                    + (body != null && !body.isBlank() ? body : ""));
                 }
                 String body = e.getResponseBodyAsString();
                 String detail = body != null && !body.isBlank() ? body : e.getMessage();
@@ -600,17 +612,19 @@ public class AuthService {
             Boolean emailVerified = extractEmailVerified(accessToken);
             OnboardingStatusResponse onboardingStatus = onboardingService.getOnboardingStatus(user.getId(), emailVerified, true);
 
-            // Try to fetch salon publicId for this owner
-            String saloonId = salonClient.getSalonPublicIdForOwner(user.getId());
-            if (saloonId != null) {
-                userResponse.setSaloonId(saloonId);
-
-                // Derive a simple salon status from onboarding progress
+            // Salon ids + status from saloon-service summary
+            salonClient.getOwnerSalonSummary(user.getId()).ifPresent(summary -> {
+                if (summary.getSaloonId() != null) {
+                    userResponse.setSaloonId(summary.getSaloonId());
+                }
+                if (summary.getInternalSaloonId() != null) {
+                    userResponse.setInternalSaloonId(summary.getInternalSaloonId());
+                }
                 String salonStatus = Boolean.TRUE.equals(onboardingStatus.getIsOnboardingComplete())
                         ? "active"
                         : "pending_setup";
                 userResponse.setSalonStatus(salonStatus);
-            }
+            });
 
             return new TokenResponse(accessToken, 7200L, userResponse, onboardingStatus);
         }

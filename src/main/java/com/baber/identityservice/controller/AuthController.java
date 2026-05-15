@@ -25,6 +25,7 @@ import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.security.SecurityRequirement;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
 import org.springframework.http.ResponseCookie;
 import jakarta.servlet.http.HttpServletResponse;
 import jakarta.servlet.http.HttpServletRequest;
@@ -501,9 +502,10 @@ public class AuthController {
      */
     @Operation(security = { @SecurityRequirement(name = "bearerAuth") })
     @GetMapping("/internal/me-id")
-    public BaseResponse<Long> getCurrentUserLocalId(Authentication authentication) {
+    public ResponseEntity<BaseResponse<Long>> getCurrentUserLocalId(Authentication authentication) {
         if (authentication == null || !(authentication.getPrincipal() instanceof Jwt jwt)) {
-            return new BaseResponse<>(false, null, 401, "Unauthorized", null);
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+                    .body(new BaseResponse<>(false, null, 401, "Unauthorized", null));
         }
 
         String keycloakUserId = jwt.getSubject();
@@ -520,8 +522,9 @@ public class AuthController {
             user = service.findUserByUsernameOrEmail(usernameOrEmail);
         }
         if (user == null) {
-            return new BaseResponse<>(false, null, 404, "User not found", null);
+            return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                    .body(new BaseResponse<>(false, null, 404, "User not found for this token (link Keycloak user to app user)", null));
         }
-        return new BaseResponse<>(true, "Success", 0, null, user.getId());
+        return ResponseEntity.ok(new BaseResponse<>(true, "Success", 0, null, user.getId()));
     }
 }

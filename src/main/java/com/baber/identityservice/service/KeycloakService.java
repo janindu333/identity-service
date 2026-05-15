@@ -240,6 +240,35 @@ public class KeycloakService {
         return toUserProfile(adminToken, users.get(0));
     }
 
+    /**
+     * Exact username search (signup sets {@code username} = email, so duplicates can exist on username alone).
+     */
+    public KeycloakUserProfile findUserByUsername(String username) {
+        if (username == null || username.isBlank()) {
+            return null;
+        }
+        String adminToken = getAdminToken();
+        HttpHeaders headers = new HttpHeaders();
+        headers.setBearerAuth(adminToken);
+
+        String url = authServerUrl + "/admin/realms/" + realm + "/users?username="
+                + URLEncoder.encode(username, StandardCharsets.UTF_8)
+                + "&exact=true&max=1";
+
+        ResponseEntity<List<Map<String, Object>>> response = restTemplate.exchange(
+                url,
+                HttpMethod.GET,
+                new HttpEntity<>(headers),
+                new ParameterizedTypeReference<>() {}
+        );
+
+        List<Map<String, Object>> users = response.getBody();
+        if (users == null || users.isEmpty()) {
+            return null;
+        }
+        return toUserProfile(adminToken, users.get(0));
+    }
+
     public KeycloakUserProfile findUserById(String userId) {
         if (userId == null || userId.isBlank()) {
             return null;

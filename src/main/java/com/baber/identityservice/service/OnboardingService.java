@@ -86,6 +86,10 @@ public class OnboardingService {
                         completedSteps.put("staff_invitation", true);
                         updated = true;
                     }
+                    if (Boolean.TRUE.equals(summary.getHasPaymentSetup()) && !completedSteps.getOrDefault("payment_setup", false)) {
+                        completedSteps.put("payment_setup", true);
+                        updated = true;
+                    }
                     if (updated) {
                         saveOnboardingStatus(user, completedSteps);
                     }
@@ -197,15 +201,19 @@ public class OnboardingService {
     /**
      * Every defined onboarding step appears explicitly in API responses (true/false).
      * Adds {@code staff_invite} as an alias of {@code staff_invitation} for older clients.
+     * Drops removed/legacy keys (e.g. {@code profile_completion}).
      */
     private void normalizeCompletedStepsMap(Map<String, Boolean> completedSteps) {
+        Map<String, Boolean> normalized = new HashMap<>();
         for (OnboardingStep step : OnboardingStep.values()) {
-            completedSteps.putIfAbsent(step.getKey(), false);
+            normalized.put(step.getKey(), Boolean.TRUE.equals(completedSteps.get(step.getKey())));
         }
         boolean staffDone = Boolean.TRUE.equals(completedSteps.get("staff_invitation"))
                 || Boolean.TRUE.equals(completedSteps.get("staff_invite"));
-        completedSteps.put("staff_invitation", staffDone);
-        completedSteps.put("staff_invite", staffDone);
+        normalized.put("staff_invitation", staffDone);
+        normalized.put("staff_invite", staffDone);
+        completedSteps.clear();
+        completedSteps.putAll(normalized);
     }
 
     /**

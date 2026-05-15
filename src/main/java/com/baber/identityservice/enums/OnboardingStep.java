@@ -31,14 +31,9 @@ public enum OnboardingStep {
     STAFF_INVITATION("staff_invitation", "Invite Staff Members", true),
     
     /**
-     * Step 6: Payment setup (optional)
+     * Step 6: Payment setup (required for owners)
      */
-    PAYMENT_SETUP("payment_setup", "Configure Payment Methods", false),
-    
-    /**
-     * Step 7: Profile completion (optional)
-     */
-    PROFILE_COMPLETION("profile_completion", "Complete Your Profile", false);
+    PAYMENT_SETUP("payment_setup", "Configure Payment Methods", true);
 
     private final String key;
     private final String displayName;

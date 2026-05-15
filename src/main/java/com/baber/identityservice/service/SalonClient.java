@@ -97,8 +97,18 @@ public class SalonClient {
             Boolean hasBusinessHours = asBoolean(dataMap.get("hasBusinessHours"));
             Boolean hasServices = asBoolean(dataMap.get("hasServices"));
             Boolean hasStaffInvite = asBoolean(dataMap.get("hasStaffInvite"));
+            Boolean hasPaymentSetup = asBoolean(dataMap.get("hasPaymentSetup"));
 
-            return Optional.of(new OwnerSalonSummaryDto(saloonId, hasBusinessHours, hasServices, hasStaffInvite));
+            Long internalSaloonId = null;
+            Object internalIdObj = dataMap.get("internalSaloonId");
+            if (internalIdObj instanceof Number n) {
+                internalSaloonId = n.longValue();
+            } else if (internalIdObj instanceof String s && !s.isBlank()) {
+                internalSaloonId = Long.parseLong(s.trim());
+            }
+
+            return Optional.of(new OwnerSalonSummaryDto(
+                    saloonId, internalSaloonId, hasBusinessHours, hasServices, hasStaffInvite, hasPaymentSetup));
         } catch (Exception e) {
             logger.warn("SalonClient: failed to fetch owner salon summary for ownerId=" + ownerId + ", error=" + e.getMessage());
             return Optional.empty();

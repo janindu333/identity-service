@@ -46,6 +46,12 @@ public class LoginUserResponse {
     private String saloonId;
 
     /**
+     * Internal numeric saloon id — use for {@code /api/appointment/*} and {@code /api/saloon/services/*} paths
+     * that expect a DB id. {@link #saloonId} is the public UUID for external links.
+     */
+    private Long internalSaloonId;
+
+    /**
      * High level salon status, for example:
      * - \"pending_setup\"
      * - \"active\"
