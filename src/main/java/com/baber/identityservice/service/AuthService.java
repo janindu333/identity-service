@@ -665,6 +665,14 @@ public class AuthService {
         return onboardingService.getOnboardingStatus(user.getId(), keycloakUser.emailVerified(), isOwner);
     }
 
+    public UserCredential ensureLocalUserProfilePublic(String keycloakUserId) {
+        return ensureLocalUserProfile(keycloakUserId);
+    }
+
+    public String extractUsernameFromAccessToken(String accessToken) {
+        return extractUsername(accessToken);
+    }
+
     private UserCredential ensureLocalUserProfile(String keycloakUserId) {
         UserCredential existing = findUserByKeycloakUserId(keycloakUserId);
         if (existing != null) {

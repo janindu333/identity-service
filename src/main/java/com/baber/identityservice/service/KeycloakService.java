@@ -61,6 +61,9 @@ public class KeycloakService {
     @Value("${keycloak.remember-me-offline-access:true}")
     private boolean rememberMeOfflineAccess;
 
+    @Value("${auth.google.idp-alias:google}")
+    private String googleIdpAlias;
+
     public KeycloakService(@Qualifier("keycloakRestTemplate") RestTemplate restTemplate) {
         this.restTemplate = restTemplate;
     }
@@ -110,6 +113,91 @@ public class KeycloakService {
         form.add("refresh_token", refreshToken);
 
         return requestToken(form);
+    }
+
+    /**
+     * Browser redirect URL for Google via Keycloak identity brokering ({@code kc_idp_hint}).
+     */
+    public String buildGoogleAuthorizationUrl(String redirectUri, String state) {
+        String encodedRedirect = URLEncoder.encode(redirectUri, StandardCharsets.UTF_8);
+        String encodedState = state == null || state.isBlank()
+                ? ""
+                : "&state=" + URLEncoder.encode(state, StandardCharsets.UTF_8);
+        return authServerUrl + "/realms/" + realm + "/protocol/openid-connect/auth"
+                + "?client_id=" + URLEncoder.encode(clientId, StandardCharsets.UTF_8)
+                + "&redirect_uri=" + encodedRedirect
+                + "&response_type=code"
+                + "&scope=" + URLEncoder.encode("openid profile email", StandardCharsets.UTF_8)
+                + "&kc_idp_hint=" + URLEncoder.encode(googleIdpAlias, StandardCharsets.UTF_8)
+                + encodedState;
+    }
+
+    public TokenGrantResponse exchangeAuthorizationCode(String code, String redirectUri) {
+        MultiValueMap<String, String> form = new LinkedMultiValueMap<>();
+        form.add("grant_type", "authorization_code");
+        form.add("client_id", clientId);
+        form.add("client_secret", clientSecret);
+        form.add("code", code);
+        form.add("redirect_uri", redirectUri);
+        return requestToken(form);
+    }
+
+    /**
+     * Exchange a Google ID token for Keycloak tokens (requires Google IdP alias in Keycloak).
+     */
+    public TokenGrantResponse exchangeGoogleIdToken(String googleIdToken) {
+        MultiValueMap<String, String> form = new LinkedMultiValueMap<>();
+        form.add("grant_type", "urn:ietf:params:oauth:grant-type:token-exchange");
+        form.add("client_id", clientId);
+        form.add("client_secret", clientSecret);
+        form.add("subject_token", googleIdToken);
+        form.add("subject_token_type", "urn:ietf:params:oauth:token-type:id_token");
+        form.add("subject_issuer", googleIdpAlias);
+        form.add("requested_token_type", "urn:ietf:params:oauth:token-type:access_token");
+        form.add("scope", "openid profile email");
+        return requestToken(form);
+    }
+
+    /**
+     * Creates a Keycloak user for social login (no password; email pre-verified).
+     */
+    public String createSocialUser(String email,
+                                 String firstName,
+                                 String lastName,
+                                 String realmRoleName) {
+        String adminToken = getAdminToken();
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        headers.setBearerAuth(adminToken);
+
+        Map<String, Object> payload = Map.of(
+                "username", email,
+                "email", email,
+                "firstName", firstName == null ? "" : firstName,
+                "lastName", lastName == null ? "" : lastName,
+                "enabled", true,
+                "emailVerified", true
+        );
+
+        ResponseEntity<Void> response = restTemplate.exchange(
+                realmAdminUsersUrl(),
+                HttpMethod.POST,
+                new HttpEntity<>(payload, headers),
+                Void.class
+        );
+
+        if (!response.getStatusCode().is2xxSuccessful()) {
+            throw new IllegalStateException("Keycloak social user create failed: HTTP " + response.getStatusCode().value());
+        }
+
+        String location = response.getHeaders().getFirst(HttpHeaders.LOCATION);
+        if (location == null || location.isBlank()) {
+            throw new IllegalStateException("Keycloak social user create returned no Location header");
+        }
+
+        String userId = location.substring(location.lastIndexOf('/') + 1);
+        assignRealmRole(adminToken, userId, realmRoleName);
+        return userId;
     }
 
     /**
@@ -196,6 +284,33 @@ public class KeycloakService {
         String userId = location.substring(location.lastIndexOf('/') + 1);
         assignRealmRole(adminToken, userId, realmRoleName);
         return userId;
+    }
+
+    /**
+     * Links a Google subject to an existing Keycloak user (requires Google IdP in realm).
+     */
+    public void linkGoogleFederatedIdentity(String keycloakUserId, String googleSubject, String googleUsername) {
+        if (keycloakUserId == null || keycloakUserId.isBlank()
+                || googleSubject == null || googleSubject.isBlank()) {
+            return;
+        }
+        String adminToken = getAdminToken();
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        headers.setBearerAuth(adminToken);
+
+        Map<String, Object> payload = Map.of(
+                "identityProvider", googleIdpAlias,
+                "userId", googleSubject,
+                "userName", googleUsername == null ? googleSubject : googleUsername
+        );
+
+        restTemplate.exchange(
+                realmAdminUsersUrl() + "/" + keycloakUserId + "/federated-identity/" + googleIdpAlias,
+                HttpMethod.POST,
+                new HttpEntity<>(payload, headers),
+                Void.class
+        );
     }
 
     /**
