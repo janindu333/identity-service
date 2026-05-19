@@ -4,6 +4,7 @@ import com.baber.identityservice.config.ServiceLogger;
 import com.baber.identityservice.dto.BaseResponse;
 import com.baber.identityservice.dto.GoogleAuthorizeUrlResponse;
 import com.baber.identityservice.dto.GoogleCallbackRequest;
+import com.baber.identityservice.dto.GoogleCallbackResponse;
 import com.baber.identityservice.dto.GoogleSignInRequest;
 import com.baber.identityservice.dto.TokenResponse;
 import com.baber.identityservice.service.AuthService;
@@ -11,7 +12,6 @@ import com.baber.identityservice.service.GoogleAuthService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.servlet.http.HttpServletResponse;
-import jakarta.validation.Valid;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.ResponseCookie;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -41,9 +41,10 @@ public class GoogleAuthController {
             description = "Redirect the browser to authorizationUrl. Configure Google as an IdP in Keycloak (alias: google).")
     public BaseResponse<GoogleAuthorizeUrlResponse> authorize(
             @RequestParam("redirectUri") String redirectUri,
-            @RequestParam(value = "role", required = false) Long role) {
+            @RequestParam(value = "role", required = false) Long role,
+            @RequestParam(value = "prompt", required = false) String prompt) {
         try {
-            GoogleAuthorizeUrlResponse response = googleAuthService.buildAuthorizeUrl(redirectUri, role);
+            GoogleAuthorizeUrlResponse response = googleAuthService.buildAuthorizeUrl(redirectUri, role, prompt);
             return new BaseResponse<>(true, "Success", 0, null, response);
         } catch (GoogleAuthService.GoogleAuthDisabledException e) {
             return new BaseResponse<>(false, null, 503, e.getMessage(), null);
@@ -56,19 +57,38 @@ public class GoogleAuthController {
     }
 
     @PostMapping("/callback")
-    @Operation(summary = "Complete Google sign-in (authorization code from Keycloak)")
-    public BaseResponse<TokenResponse> callback(
-            @Valid @RequestBody GoogleCallbackRequest request,
+    @Operation(summary = "Complete Google sign-in (authorization code from Keycloak)",
+            description = "New users without role receive errorCode 4101 and must call again with role 3 or 7 and registrationToken.")
+    public BaseResponse<GoogleCallbackResponse> callback(
+            @RequestBody GoogleCallbackRequest request,
             HttpServletResponse response) {
         try {
-            AuthService.KeycloakLoginResult result = googleAuthService.completeAuthorizationCode(
+            GoogleAuthService.GoogleCallbackOutcome outcome = googleAuthService.handleCallback(
                     request.getCode(),
                     request.getRedirectUri(),
+                    request.getState(),
+                    request.getRole(),
+                    request.getRegistrationToken(),
                     false
             );
-            setRefreshTokenCookie(response, result.refreshToken(), false);
+            if (outcome.isRoleSelection()) {
+                return new BaseResponse<>(
+                        false,
+                        "Role selection required",
+                        GoogleAuthService.REQUIRES_ROLE_SELECTION_ERROR_CODE,
+                        null,
+                        outcome.roleSelectionResponse());
+            }
+            setRefreshTokenCookie(response, outcome.loginResult().refreshToken(), false);
             setRememberMePreferenceCookie(response, false);
-            return new BaseResponse<>(true, "Success", 0, null, result.tokenResponse());
+            return new BaseResponse<>(
+                    true,
+                    "Success",
+                    0,
+                    null,
+                    GoogleCallbackResponse.fromLogin(
+                            outcome.loginResult().tokenResponse(),
+                            outcome.existingAccount()));
         } catch (GoogleAuthService.GoogleAuthDisabledException e) {
             return new BaseResponse<>(false, null, 503, e.getMessage(), null);
         } catch (GoogleAuthService.GoogleAuthException e) {
@@ -82,7 +102,7 @@ public class GoogleAuthController {
     @PostMapping
     @Operation(summary = "Sign in with Google ID token (SPA / mobile)")
     public BaseResponse<TokenResponse> signInWithIdToken(
-            @Valid @RequestBody GoogleSignInRequest request,
+            @RequestBody GoogleSignInRequest request,
             HttpServletResponse response) {
         boolean rememberMe = request.getRememberMe() != null && request.getRememberMe();
         try {

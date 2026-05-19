@@ -15,8 +15,9 @@ import org.springframework.web.client.RestTemplate;
 @Configuration
 public class RestTemplateConfig {
 
-    private static final int CONNECT_TIMEOUT_MS = 2000;
-    private static final int READ_TIMEOUT_MS = 3000;
+    private static final int CONNECT_TIMEOUT_MS = 5000;
+    /** Saloon summary can be slow when aggregating hours/services across salons. */
+    private static final int READ_TIMEOUT_MS = 15000;
 
     private RestTemplate withTimeouts() {
         SimpleClientHttpRequestFactory requestFactory = new SimpleClientHttpRequestFactory();

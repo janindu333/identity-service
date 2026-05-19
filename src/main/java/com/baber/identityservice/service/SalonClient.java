@@ -73,6 +73,15 @@ public class SalonClient {
      * Used by OnboardingService to sync business_hours, services_setup, staff_invitation from saloon-service.
      */
     public Optional<OwnerSalonSummaryDto> getOwnerSalonSummary(Long ownerId) {
+        Optional<OwnerSalonSummaryDto> first = fetchOwnerSalonSummary(ownerId);
+        if (first.isPresent()) {
+            return first;
+        }
+        logger.info("SalonClient: retrying owner salon summary for ownerId=" + ownerId);
+        return fetchOwnerSalonSummary(ownerId);
+    }
+
+    private Optional<OwnerSalonSummaryDto> fetchOwnerSalonSummary(Long ownerId) {
         try {
             String url = saloonServiceUrl + "/api/saloon/owner/{ownerId}/summary";
             @SuppressWarnings("unchecked")
@@ -94,6 +103,9 @@ public class SalonClient {
 
             Object saloonIdObj = dataMap.get("saloonId");
             String saloonId = saloonIdObj != null ? saloonIdObj.toString() : null;
+            if (saloonId == null || saloonId.isBlank()) {
+                return Optional.empty();
+            }
             Boolean hasBusinessHours = asBoolean(dataMap.get("hasBusinessHours"));
             Boolean hasServices = asBoolean(dataMap.get("hasServices"));
             Boolean hasStaffInvite = asBoolean(dataMap.get("hasStaffInvite"));

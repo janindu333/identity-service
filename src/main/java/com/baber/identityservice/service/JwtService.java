@@ -5,7 +5,7 @@ import io.jsonwebtoken.Jws;
 import io.jsonwebtoken.JwtException;
 import io.jsonwebtoken.Jwts;
 import io.jsonwebtoken.SignatureAlgorithm;
-import io.jsonwebtoken.io.Decoders;
+import com.baber.identityservice.config.JwtSigningKeySupport;
 import io.jsonwebtoken.security.Keys;
 
 import org.slf4j.Logger;
@@ -153,7 +153,6 @@ public class JwtService {
     }
 
     private Key getSignKey() {
-        byte[] keyBytes = Decoders.BASE64.decode(secret);
-        return Keys.hmacShaKeyFor(keyBytes);
+        return JwtSigningKeySupport.hmacKeyFromSecret(secret);
     }
 }

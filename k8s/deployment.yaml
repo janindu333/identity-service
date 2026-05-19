@@ -44,12 +44,27 @@ spec:
                 secretKeyRef:
                   name: saloon-secrets
                   key: jwt-secret
+            - name: KEYCLOAK_AUTH_URL
+              value: "http://host.docker.internal:9090"
+            - name: KEYCLOAK_PUBLIC_AUTH_URL
+              value: "http://localhost:9090"
             - name: JWT_ISSUER_URI
               value: "http://host.docker.internal:9090/realms/saloon2"
             - name: API_GATEWAY_URL
               value: "/"
             - name: MANAGEMENT_HEALTH_MAIL_ENABLED
               value: "false"
+            # Google Sign-In (fill in GOOGLE_CLIENT_ID from Google Cloud Console)
+            - name: GOOGLE_SIGNIN_ENABLED
+              value: "true"
+            - name: GOOGLE_CLIENT_ID
+              value: "300314982880-qfo1h0p1ck3spo2ls4gh3kpjmcctbqnv.apps.googleusercontent.com"
+            - name: GOOGLE_REDIRECT_URI
+              value: "http://localhost:3000/auth/google/callback"
+            - name: GOOGLE_ALLOWED_REDIRECT_URIS
+              value: "http://localhost:3000/auth/google/callback,http://api.saloon.local/auth/google/callback"
+            - name: KEYCLOAK_GOOGLE_IDP_ALIAS
+              value: "google"
           startupProbe:
             httpGet:
               path: /actuator/health

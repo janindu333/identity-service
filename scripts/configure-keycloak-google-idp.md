@@ -42,6 +42,7 @@ KEYCLOAK_GOOGLE_IDP_ALIAS=google
 
 | Flow | Endpoint |
 |------|----------|
-| Browser redirect | `GET /auth/google/authorize?redirectUri=...` → open `authorizationUrl` |
+| Browser redirect | `GET /auth/google/authorize?redirectUri=...&prompt=select_account` → open `authorizationUrl` (account chooser) |
+| Logout | `POST /auth/logout?postLogoutRedirectUri=http://localhost:3000` → use `data.keycloakLogoutUrl` in browser |
 | After Keycloak redirect | `POST /auth/google/callback` `{ "code", "redirectUri" }` |
 | SPA / mobile (Google Sign-In button) | `POST /auth/google` `{ "idToken", "role" }` |

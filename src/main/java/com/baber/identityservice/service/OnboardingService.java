@@ -37,7 +37,7 @@ public class OnboardingService {
      * Get onboarding status for a user
      */
     public OnboardingStatusResponse getOnboardingStatus(Long userId) {
-        return getOnboardingStatus(userId, null, null);
+        return getOnboardingStatus(userId, null, null, null);
     }
 
     /**
@@ -45,6 +45,17 @@ public class OnboardingService {
      * identity signals to avoid relying on local auth columns.
      */
     public OnboardingStatusResponse getOnboardingStatus(Long userId, Boolean emailVerifiedOverride, Boolean isOwnerOverride) {
+        return getOnboardingStatus(userId, emailVerifiedOverride, isOwnerOverride, null);
+    }
+
+    /**
+     * @param prefetchedSalonSummary when provided (e.g. from login), avoids a second call to saloon-service
+     */
+    public OnboardingStatusResponse getOnboardingStatus(
+            Long userId,
+            Boolean emailVerifiedOverride,
+            Boolean isOwnerOverride,
+            Optional<OwnerSalonSummaryDto> prefetchedSalonSummary) {
         Optional<UserCredential> userOpt = userCredentialRepository.findById(userId);
         if (userOpt.isEmpty()) {
             return null;
@@ -66,7 +77,9 @@ public class OnboardingService {
             boolean isOwner = isOwnerOverride != null ? isOwnerOverride : false;
 
             if (isOwner) {
-                Optional<OwnerSalonSummaryDto> summaryOpt = salonClient.getOwnerSalonSummary(user.getId());
+                Optional<OwnerSalonSummaryDto> summaryOpt = prefetchedSalonSummary != null
+                        ? prefetchedSalonSummary
+                        : salonClient.getOwnerSalonSummary(user.getId());
                 if (summaryOpt.isPresent()) {
                     OwnerSalonSummaryDto summary = summaryOpt.get();
                     boolean updated = false;
@@ -124,16 +137,16 @@ public class OnboardingService {
         
         boolean isComplete = completedRequired == totalRequired;
         
-        // Determine current step: use "complete" when all required steps are done
-        String currentStep = user.getCurrentOnboardingStep();
+        // Always derive current step from completed steps (avoid stale "salon_creation" after login sync).
+        String currentStep;
         if (isComplete) {
             currentStep = "complete";
-            if (!"complete".equals(user.getCurrentOnboardingStep())) {
-                user.setCurrentOnboardingStep("complete");
-                userCredentialRepository.save(user);
-            }
-        } else if (currentStep == null || currentStep.isEmpty()) {
+        } else {
             currentStep = nextRequiredStep != null ? nextRequiredStep : "email_verification";
+        }
+        if (!currentStep.equals(user.getCurrentOnboardingStep())) {
+            user.setCurrentOnboardingStep(currentStep);
+            userCredentialRepository.save(user);
         }
         
         OnboardingStatusResponse response = new OnboardingStatusResponse();

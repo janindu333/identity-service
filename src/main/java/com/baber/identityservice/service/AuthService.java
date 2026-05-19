@@ -15,6 +15,8 @@ import com.baber.identityservice.repository.RoleRepository;
 import com.baber.identityservice.repository.PasswordResetTokenRepository;
 import com.baber.identityservice.repository.PasswordHistoryRepository;
 import com.baber.identityservice.dto.OnboardingStatusResponse;
+import com.baber.identityservice.dto.LogoutResponse;
+import com.baber.identityservice.dto.OwnerSalonSummaryDto;
 import com.baber.identityservice.config.ServiceLogger;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
@@ -244,6 +246,15 @@ public class AuthService {
         TokenResponse tokenResponse = createLoginResponse(grant.accessToken(), usernameOrEmail);
         tokenResponse.setExpiresIn(grant.expiresIn());
         return new KeycloakLoginResult(tokenResponse, grant.refreshToken());
+    }
+
+    /**
+     * App logout: revoke Keycloak refresh token and build browser end-session URL.
+     */
+    public LogoutResponse logout(String refreshToken, String postLogoutRedirectUri) {
+        keycloakService.revokeRefreshToken(refreshToken);
+        String logoutUrl = keycloakService.buildBrowserLogoutUrl(postLogoutRedirectUri, null);
+        return new LogoutResponse(logoutUrl);
     }
 
     public KeycloakLoginResult refreshWithKeycloak(String refreshToken, String usernameHint) {
@@ -601,6 +612,18 @@ public class AuthService {
         userResponse.setFullName(buildDisplayName(profile));
 
         String roleName = extractPrimaryRole(accessToken);
+        if (profile != null && profile.realmRoles() != null) {
+            if (profile.realmRoles().stream().anyMatch(r -> "owner".equalsIgnoreCase(r))) {
+                roleName = "owner";
+            } else if (roleName == null) {
+                roleName = profile.realmRoles().stream()
+                        .filter(r -> !r.startsWith("default-roles-"))
+                        .filter(r -> !"offline_access".equalsIgnoreCase(r))
+                        .filter(r -> !"uma_authorization".equalsIgnoreCase(r))
+                        .findFirst()
+                        .orElse(null);
+            }
+        }
         if (roleName != null) {
             userResponse.setRole(roleName.toLowerCase());
         }
@@ -610,10 +633,19 @@ public class AuthService {
         // Owners: include onboarding status and, if available, salon info
         if ("owner".equalsIgnoreCase(normalizedRole)) {
             Boolean emailVerified = extractEmailVerified(accessToken);
-            OnboardingStatusResponse onboardingStatus = onboardingService.getOnboardingStatus(user.getId(), emailVerified, true);
+            if (!Boolean.TRUE.equals(emailVerified)) {
+                KeycloakService.KeycloakUserProfile kcProfile = profile != null
+                        ? profile
+                        : (keycloakUserId != null ? keycloakService.findUserById(keycloakUserId) : null);
+                if (kcProfile != null && Boolean.TRUE.equals(kcProfile.emailVerified())) {
+                    emailVerified = true;
+                }
+            }
+            Optional<OwnerSalonSummaryDto> salonSummary = salonClient.getOwnerSalonSummary(user.getId());
+            OnboardingStatusResponse onboardingStatus = onboardingService.getOnboardingStatus(
+                    user.getId(), emailVerified, true, salonSummary);
 
-            // Salon ids + status from saloon-service summary
-            salonClient.getOwnerSalonSummary(user.getId()).ifPresent(summary -> {
+            salonSummary.ifPresent(summary -> {
                 if (summary.getSaloonId() != null) {
                     userResponse.setSaloonId(summary.getSaloonId());
                 }
@@ -669,8 +701,51 @@ public class AuthService {
         return ensureLocalUserProfile(keycloakUserId);
     }
 
+    /**
+     * Login hint from a Keycloak RS256 access token (email / preferred_username), not HS256 app JWT.
+     */
     public String extractUsernameFromAccessToken(String accessToken) {
-        return extractUsername(accessToken);
+        JsonNode payload = parseJwtPayload(accessToken);
+        if (payload == null) {
+            return null;
+        }
+        String preferred = textClaim(payload, "preferred_username");
+        if (preferred != null && !preferred.isBlank()) {
+            return preferred;
+        }
+        String email = textClaim(payload, "email");
+        if (email != null && !email.isBlank()) {
+            return email;
+        }
+        String username = textClaim(payload, "username");
+        if (username != null && !username.isBlank()) {
+            return username;
+        }
+        String sub = textClaim(payload, "sub");
+        if (sub != null && !sub.isBlank()) {
+            KeycloakService.KeycloakUserProfile profile = keycloakService.findUserById(sub);
+            if (profile != null) {
+                if (profile.email() != null && !profile.email().isBlank()) {
+                    return profile.email();
+                }
+                if (profile.username() != null && !profile.username().isBlank()) {
+                    return profile.username();
+                }
+            }
+        }
+        return null;
+    }
+
+    public String extractSubjectFromAccessToken(String accessToken) {
+        return extractSubject(accessToken);
+    }
+
+    private static String textClaim(JsonNode payload, String name) {
+        if (payload == null || name == null) {
+            return null;
+        }
+        JsonNode node = payload.get(name);
+        return node != null && !node.isNull() ? node.asText() : null;
     }
 
     private UserCredential ensureLocalUserProfile(String keycloakUserId) {

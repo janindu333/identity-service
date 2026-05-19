@@ -11,6 +11,7 @@ import com.baber.identityservice.dto.TokenResponse;
 import com.baber.identityservice.dto.RegistrationResult;
 import com.baber.identityservice.dto.UserRegistrationRequest;
 import com.baber.identityservice.dto.ValidateTokenResponse;
+import com.baber.identityservice.dto.LogoutResponse;
 import com.baber.identityservice.dto.OnboardingStatusResponse;
 import com.baber.identityservice.entity.UserCredential;
 import com.baber.identityservice.service.AuthRequest;
@@ -288,12 +289,20 @@ public class AuthController {
     }
     
     /**
-     * Logout endpoint - clears the refresh token cookie
+     * Logout: clears app cookies, revokes Keycloak refresh token, returns browser logout URL for SSO.
      */
     @PostMapping("/logout")
-    public BaseResponse<String> logout(HttpServletResponse response) {
+    @Operation(summary = "Logout",
+            description = "Clears cookies and returns keycloakLogoutUrl to end Keycloak/Google SSO in the browser.")
+    public BaseResponse<LogoutResponse> logout(
+            @RequestParam(value = "postLogoutRedirectUri", required = false) String postLogoutRedirectUri,
+            HttpServletRequest request,
+            HttpServletResponse response) {
         logger.apiRequest("Logout request received");
-        
+
+        String refreshToken = getRefreshTokenFromCookie(request);
+        LogoutResponse logoutResponse = service.logout(refreshToken, postLogoutRedirectUri);
+
         ResponseCookie cookie = ResponseCookie.from(REFRESH_TOKEN_COOKIE, "")
             .httpOnly(true)
             .secure(true)
@@ -305,8 +314,8 @@ public class AuthController {
         response.addHeader(HttpHeaders.SET_COOKIE, cookie.toString());
         clearRememberMeCookie(response);
         logger.info("User logged out successfully, refresh token and remember-me cookies cleared");
-        
-        return new BaseResponse<>(true, "Logged out successfully", 0, null, null);
+
+        return new BaseResponse<>(true, "Logged out successfully", 0, null, logoutResponse);
     }
     
     /**

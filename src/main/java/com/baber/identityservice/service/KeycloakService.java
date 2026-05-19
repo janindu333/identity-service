@@ -38,6 +38,10 @@ public class KeycloakService {
     @Value("${keycloak.auth-server-url}")
     private String authServerUrl;
 
+    /** Browser-facing Keycloak base URL (e.g. http://localhost:9090). Falls back to auth-server-url. */
+    @Value("${keycloak.public-auth-server-url:${keycloak.auth-server-url}}")
+    private String publicAuthServerUrl;
+
     @Value("${keycloak.realm}")
     private String realm;
 
@@ -119,17 +123,65 @@ public class KeycloakService {
      * Browser redirect URL for Google via Keycloak identity brokering ({@code kc_idp_hint}).
      */
     public String buildGoogleAuthorizationUrl(String redirectUri, String state) {
+        return buildGoogleAuthorizationUrl(redirectUri, state, null);
+    }
+
+    /**
+     * @param prompt OIDC prompt, e.g. {@code select_account} so Google shows account chooser
+     */
+    public String buildGoogleAuthorizationUrl(String redirectUri, String state, String prompt) {
         String encodedRedirect = URLEncoder.encode(redirectUri, StandardCharsets.UTF_8);
         String encodedState = state == null || state.isBlank()
                 ? ""
                 : "&state=" + URLEncoder.encode(state, StandardCharsets.UTF_8);
-        return authServerUrl + "/realms/" + realm + "/protocol/openid-connect/auth"
+        String promptParam = prompt == null || prompt.isBlank()
+                ? ""
+                : "&prompt=" + URLEncoder.encode(prompt.trim(), StandardCharsets.UTF_8);
+        return publicAuthServerUrl + "/realms/" + realm + "/protocol/openid-connect/auth"
                 + "?client_id=" + URLEncoder.encode(clientId, StandardCharsets.UTF_8)
                 + "&redirect_uri=" + encodedRedirect
                 + "&response_type=code"
                 + "&scope=" + URLEncoder.encode("openid profile email", StandardCharsets.UTF_8)
                 + "&kc_idp_hint=" + URLEncoder.encode(googleIdpAlias, StandardCharsets.UTF_8)
+                + promptParam
                 + encodedState;
+    }
+
+    /**
+     * Revokes a Keycloak refresh token (best-effort on logout).
+     */
+    public void revokeRefreshToken(String refreshToken) {
+        if (refreshToken == null || refreshToken.isBlank()) {
+            return;
+        }
+        MultiValueMap<String, String> form = new LinkedMultiValueMap<>();
+        form.add("client_id", clientId);
+        form.add("client_secret", clientSecret);
+        form.add("token", refreshToken.trim());
+        form.add("token_type_hint", "refresh_token");
+        try {
+            restTemplate.postForEntity(realmRevokeUrl(), new org.springframework.http.HttpEntity<>(form), Void.class);
+        } catch (Exception e) {
+            log.warn("Keycloak refresh token revoke failed on logout: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * Browser logout URL (ends Keycloak SSO; use {@link #publicAuthServerUrl}).
+     */
+    public String buildBrowserLogoutUrl(String postLogoutRedirectUri, String idTokenHint) {
+        StringBuilder url = new StringBuilder(publicAuthServerUrl)
+                .append("/realms/").append(realm)
+                .append("/protocol/openid-connect/logout")
+                .append("?client_id=").append(URLEncoder.encode(clientId, StandardCharsets.UTF_8));
+        if (postLogoutRedirectUri != null && !postLogoutRedirectUri.isBlank()) {
+            url.append("&post_logout_redirect_uri=")
+                    .append(URLEncoder.encode(postLogoutRedirectUri.trim(), StandardCharsets.UTF_8));
+        }
+        if (idTokenHint != null && !idTokenHint.isBlank()) {
+            url.append("&id_token_hint=").append(URLEncoder.encode(idTokenHint.trim(), StandardCharsets.UTF_8));
+        }
+        return url.toString();
     }
 
     public TokenGrantResponse exchangeAuthorizationCode(String code, String redirectUri) {
@@ -198,6 +250,14 @@ public class KeycloakService {
         String userId = location.substring(location.lastIndexOf('/') + 1);
         assignRealmRole(adminToken, userId, realmRoleName);
         return userId;
+    }
+
+    /** Assigns a realm role to an existing user (no-op if role name is blank). */
+    public void assignRealmRoleToUser(String userId, String roleName) {
+        if (userId == null || userId.isBlank() || roleName == null || roleName.isBlank()) {
+            return;
+        }
+        assignRealmRole(getAdminToken(), userId, roleName.trim().toLowerCase());
     }
 
     /**
@@ -624,6 +684,10 @@ public class KeycloakService {
 
     private String realmTokenUrl() {
         return authServerUrl + "/realms/" + realm + "/protocol/openid-connect/token";
+    }
+
+    private String realmRevokeUrl() {
+        return authServerUrl + "/realms/" + realm + "/protocol/openid-connect/revoke";
     }
 
     private String realmAdminUsersUrl() {
