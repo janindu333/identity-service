@@ -65,6 +65,10 @@ spec:
               value: "http://localhost:3000/auth/google/callback,http://api.saloon.local/auth/google/callback"
             - name: KEYCLOAK_GOOGLE_IDP_ALIAS
               value: "google"
+            - name: MANAGEMENT_OTLP_TRACING_ENDPOINT
+              value: "http://tempo.observability.svc.cluster.local:4318/v1/traces"
+            - name: MANAGEMENT_TRACING_PROPAGATION_TYPE
+              value: "w3c"
           startupProbe:
             httpGet:
               path: /actuator/health
