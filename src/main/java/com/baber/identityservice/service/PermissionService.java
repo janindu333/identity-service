@@ -22,7 +22,7 @@ public class PermissionService {
     private RoleRepository roleRepository;
 
     public List<Permission> getDefaultPermissions(Long roleId) {
-        Optional<Role> roleOptional = roleRepository.findById(roleId);
+        Optional<Role> roleOptional = roleRepository.findById(Math.toIntExact(roleId));
         if (roleOptional.isPresent()) {
             Role role = roleOptional.get();
             return role.getPermissions();

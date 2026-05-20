@@ -10,22 +10,27 @@ import com.baber.identityservice.entity.UserCredential;
 import com.baber.identityservice.entity.Role;
 import com.baber.identityservice.entity.PasswordResetToken;
 import com.baber.identityservice.entity.PasswordHistory;
-import com.baber.identityservice.entity.EmailVerificationToken;
 import com.baber.identityservice.repository.UserCredentialRepository;
 import com.baber.identityservice.repository.RoleRepository;
 import com.baber.identityservice.repository.PasswordResetTokenRepository;
 import com.baber.identityservice.repository.PasswordHistoryRepository;
-import com.baber.identityservice.repository.EmailVerificationTokenRepository;
 import com.baber.identityservice.dto.OnboardingStatusResponse;
+import com.baber.identityservice.dto.LogoutResponse;
+import com.baber.identityservice.dto.OwnerSalonSummaryDto;
 import com.baber.identityservice.config.ServiceLogger;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.client.HttpClientErrorException;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.LocalDateTime;
 import java.time.temporal.ChronoUnit;
+import java.util.Base64;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -34,6 +39,7 @@ import com.baber.identityservice.dto.AddLocationRequest;
 @Service
 public class AuthService {
     private final ServiceLogger logger = new ServiceLogger(AuthService.class);
+    private final ObjectMapper objectMapper = new ObjectMapper();
 
     @Autowired
     private UserCredentialRepository userCredentialRepository;
@@ -57,25 +63,19 @@ public class AuthService {
     private PasswordHistoryRepository passwordHistoryRepository;
 
     @Autowired
-    private EmailVerificationTokenRepository emailVerificationTokenRepository;
-
-    @Autowired
     private OnboardingService onboardingService;
 
     @Autowired
     private SalonClient salonClient;
+
+    @Autowired
+    private KeycloakService keycloakService;
 
     @Value("${app.password-reset.token-expiration-minutes:60}")
     private int tokenExpirationMinutes;
 
     @Value("${app.password-reset.reset-url:http://localhost:3000/reset-password}")
     private String resetUrl;
-
-    @Value("${app.email-verification.token-expiration-minutes:1440}")
-    private int emailVerificationTokenExpirationMinutes; // Default 24 hours
-
-    @Value("${app.email-verification.verify-url:http://localhost:3000/verify-email}")
-    private String emailVerificationUrl;
 
     @Value("${app.password-history.check-count:5}")
     private int passwordHistoryCheckCount; // Number of recent passwords to check
@@ -84,63 +84,10 @@ public class AuthService {
     public RegistrationResult saveUser(UserRegistrationRequest request) {
         logger.info("Saving user: " + request.getFirstName() + " " + request.getLastName());
         try {
-            // Check if user exists by email
-            Optional<UserCredential> existingUserByEmail = userCredentialRepository
-            .findByEmail(request.getEmail());
-            if (existingUserByEmail.isPresent()) {
-                UserCredential existingUser = existingUserByEmail.get();
-
-                // If the existing account is not verified (typically for salon owners),
-                // follow industry best practice:
-                // - Do NOT create a new account
-                // - Re-send the verification email
-                // - Return success with a clear message so the frontend can guide the user
-                if (Boolean.FALSE.equals(existingUser.getEmailVerified())) {
-                    logger.warn("Registration attempted with email that already exists but is not verified: "
-                            + request.getEmail());
-
-                    // Only owners (roleId = 2) require verification / onboarding
-                    Role existingRole = existingUser.getRole();
-                    Integer existingRoleId = existingRole != null ? existingRole.getId() : null;
-                    boolean existingIsOwner = existingRoleId != null && existingRoleId == 2;
-
-                    if (existingIsOwner) {
-                        // Send (or re-send) verification email for the existing owner account
-                        sendEmailVerification(existingUser);
-
-                        return new RegistrationResult(
-                            true,
-                            "An account with this email already exists but is not verified. " +
-                            "We have sent you a new verification email. Please check your inbox.",
-                            0,
-                            null
-                        );
-                    }
-
-                    // For any other role with unverified email, keep behavior simple:
-                    // treat it as a conflict to avoid unexpected flows.
-                    logger.warn("Existing unverified account is not an owner role. Treating as conflict.");
-                    return new RegistrationResult(false, null, 409, "User email already exists");
-                }
-
-                logger.warn("User with email: " + request.getEmail()
-                + " already exists and is verified");
-                return new RegistrationResult(false, null, 409, "User email already exists");
-            }
-
-            // Check if user exists by phone
-            Optional<UserCredential> existingUserByPhone = userCredentialRepository
-            .findByPhone(request.getPhone());
-            if (existingUserByPhone.isPresent()) {
-                logger.warn("User with phone: " + request.getPhone() 
-                + " already exists");
-                return new RegistrationResult(false, null, 409, "User phone already exists");
-            }
-    
-            // Get the role from database
+            // Determine role to assign in Keycloak
             Role userRole;
             if (request.getRole() != null) {
-                Optional<Role> requestedRole = roleRepository.findById(request.getRole().longValue());
+                Optional<Role> requestedRole = roleRepository.findById(request.getRole().intValue());
                 if (requestedRole.isPresent()) {
                     userRole = requestedRole.get();
                 } else {
@@ -148,43 +95,84 @@ public class AuthService {
                 }
             } else {
                 // Default to Client/Customer role (ID: 7 based on specification)
-                Optional<Role> defaultRole = roleRepository.findByName("Customer");
+                Optional<Role> defaultRole = roleRepository.findByName("customer");
                 if (defaultRole.isPresent()) {
                     userRole = defaultRole.get();
                 } else {
                     return new RegistrationResult(false, null, 500, "Default role not found in system");
                 }
             }
-    
-            // Convert DTO to entity
-            UserCredential userCredential = new UserCredential();
-            userCredential.setFirstName(request.getFirstName());
-            userCredential.setLastName(request.getLastName());
-            userCredential.setEmail(request.getEmail());
-            userCredential.setPhone(request.getPhone());
-            userCredential.setPassword(passwordEncoder.encode(request.getPassword()));
-            userCredential.setRole(userRole); // Set the Role entity
 
-            // Determine behavior based on role:
-            // - Salon Owner (roleId = 2): email verification REQUIRED
-            // - Client/Customer (roleId = 7): email verification NOT required, active immediately
-            int roleId = userRole.getId();
-            boolean isOwner = roleId == 2;
-            boolean isClient = roleId == 7;
+            // Determine behavior based on role name from mirrored DB role.
+            // Role IDs can change after data cleanup/sync, so avoid hardcoded numeric checks.
+            String normalizedRoleName = userRole.getName() == null ? "" : userRole.getName().trim().toLowerCase();
+            boolean isOwner = "owner".equals(normalizedRoleName);
+            boolean emailVerified = !isOwner;
 
-            if (isOwner) {
-                // Owners must verify email
-                userCredential.setEmailVerified(false);
-            } else if (isClient) {
-                // Clients are active immediately
-                userCredential.setEmailVerified(true);
-            } else {
-                // Fallback: treat unknown roles as requiring verification for safety
-                userCredential.setEmailVerified(false);
+            // Duplicate check in Keycloak (email and username — signup uses username = email)
+            String requestedEmail = request.getEmail() == null ? "" : request.getEmail().trim();
+            KeycloakService.KeycloakUserProfile existingKeycloakUser = keycloakService.findUserByEmail(requestedEmail);
+            if (existingKeycloakUser == null) {
+                existingKeycloakUser = keycloakService.findUserByUsername(requestedEmail);
             }
-    
-            userCredentialRepository.save(userCredential);
-            logger.success("User saved successfully: " + userCredential.getName() + " with role: " + userRole.getName());
+            if (existingKeycloakUser != null) {
+                String keycloakEmail = existingKeycloakUser.email() == null ? "" : existingKeycloakUser.email().trim();
+                String keycloakUsername = existingKeycloakUser.username() == null ? "" : existingKeycloakUser.username().trim();
+                boolean sameEmail = requestedEmail.equalsIgnoreCase(keycloakEmail);
+                boolean sameUsername = requestedEmail.equalsIgnoreCase(keycloakUsername);
+                if (sameEmail || sameUsername) {
+                    UserCredential existingLocal = ensureLocalUserProfile(existingKeycloakUser.id());
+                    boolean isOwnerInKeycloak = existingKeycloakUser.realmRoles() != null
+                            && existingKeycloakUser.realmRoles().stream().anyMatch(r -> "owner".equalsIgnoreCase(r));
+                    if (!Boolean.TRUE.equals(existingKeycloakUser.emailVerified()) && isOwnerInKeycloak) {
+                        sendEmailVerification(existingLocal);
+                        return new RegistrationResult(
+                                true,
+                                "An account with this email already exists but is not verified. We have sent you a new verification email. Please check your inbox.",
+                                0,
+                                null
+                        );
+                    }
+                    return new RegistrationResult(false, null, 409,
+                            "An account already exists with this email or username (Keycloak user id: "
+                                    + existingKeycloakUser.id() + ").");
+                }
+                logger.warn("Ignoring Keycloak user hit for non-matching identifiers. requested=" + requestedEmail
+                        + ", keycloakEmail=" + keycloakEmail + ", keycloakUsername=" + keycloakUsername
+                        + ", userId=" + existingKeycloakUser.id());
+            }
+
+            String keycloakUserId;
+            try {
+                keycloakUserId = keycloakService.createUser(
+                        request.getEmail(),
+                        request.getFirstName(),
+                        request.getLastName(),
+                        request.getPhone(),
+                        request.getPassword(),
+                        emailVerified,
+                        mapRoleNameForKeycloak(userRole.getName())
+                );
+            } catch (HttpClientErrorException e) {
+                if (e.getStatusCode().value() == HttpStatus.CONFLICT.value()) {
+                    String body = e.getResponseBodyAsString();
+                    logger.warn("Keycloak CONFLICT on signup for " + request.getEmail() + ": " + body);
+                    return new RegistrationResult(false, null, 409,
+                            "Account already exists in identity provider (email or username may already be in use). "
+                                    + (body != null && !body.isBlank() ? body : ""));
+                }
+                String body = e.getResponseBodyAsString();
+                String detail = body != null && !body.isBlank() ? body : e.getMessage();
+                logger.error("Keycloak HTTP " + e.getStatusCode().value() + " for signup "
+                        + request.getEmail() + ": " + detail);
+                return new RegistrationResult(false, null, 502, "Failed to create user in identity provider");
+            } catch (Exception keycloakError) {
+                logger.error("Failed to create user in Keycloak: " + keycloakError.getMessage());
+                return new RegistrationResult(false, null, 502, "Failed to create user in identity provider");
+            }
+
+            UserCredential userCredential = ensureLocalUserProfile(keycloakUserId);
+            logger.success("User profile saved successfully for keycloakUserId: " + keycloakUserId + " with role: " + userRole.getName());
             
             if (isOwner) {
                 // Generate email verification token and send email for owners only
@@ -214,42 +202,34 @@ public class AuthService {
         logger.info("Generating access token for user: " + username);
         UserCredential user = findUserByUsernameOrEmail(username);
         if (user == null) {
-            logger.error("User not found: " + username);
             throw new RuntimeException("User not found");
         }
-        return jwtService.generateAccessToken(username, user.getRole().getName(), user.getId(), user.getRole().getId());
+        return jwtService.generateAccessToken(username, "user", user.getId(), 120 * 60 * 1000L);
     }
 
     public String generateRefreshToken(String username) {
         logger.info("Generating refresh token for user: " + username);
         UserCredential user = findUserByUsernameOrEmail(username);
         if (user == null) {
-            logger.error("User not found: " + username);
             throw new RuntimeException("User not found");
         }
-        return jwtService.generateRefreshToken(username, user.getRole().getName());
+        return jwtService.generateRefreshToken(username, "user");
     }
 
     public UserCredential findUserByUsernameOrEmail(String usernameOrEmail) {
         logger.info("Finding user by username or email: " + usernameOrEmail);
-        
-        // First try to find by full name (firstName + lastName)
-        Optional<UserCredential> userByName = userCredentialRepository
-        .findByName(usernameOrEmail);
-        if (userByName.isPresent()) {
-            logger.info("User found by full name: " + usernameOrEmail);
-            return userByName.get();
+        KeycloakService.KeycloakUserProfile keycloakUser = keycloakService.findUserByEmail(usernameOrEmail);
+        if (keycloakUser != null) {
+            return ensureLocalUserProfile(keycloakUser.id());
         }
-        
-        // If not found by full name, try to find by email
-        Optional<UserCredential> userByEmail = userCredentialRepository.findByEmail(usernameOrEmail);
-        if (userByEmail.isPresent()) {
-            logger.info("User found by email: " + usernameOrEmail);
-            return userByEmail.get();
-        }
-        
-        logger.warn("User not found by username or email: " + usernameOrEmail);
         return null;
+    }
+
+    public UserCredential findUserByKeycloakUserId(String keycloakUserId) {
+        if (keycloakUserId == null || keycloakUserId.isBlank()) {
+            return null;
+        }
+        return userCredentialRepository.findByKeycloakUserId(keycloakUserId).orElse(null);
     }
 
     public String generateAccessTokenByUsernameOrEmail(String usernameOrEmail) {
@@ -258,8 +238,33 @@ public class AuthService {
         if (user == null) {
             throw new RuntimeException("User not found");
         }
-        // Use the method with 2 hours expiration (120 * 60 * 1000 milliseconds)
-        return jwtService.generateAccessToken(user.getName(), user.getRole().getName(), user.getId());
+        return jwtService.generateAccessToken(usernameOrEmail, "user", user.getId());
+    }
+
+    public KeycloakLoginResult loginWithKeycloak(String usernameOrEmail, String password, boolean rememberMe) {
+        KeycloakService.TokenGrantResponse grant = keycloakService.login(usernameOrEmail, password, rememberMe);
+        TokenResponse tokenResponse = createLoginResponse(grant.accessToken(), usernameOrEmail);
+        tokenResponse.setExpiresIn(grant.expiresIn());
+        return new KeycloakLoginResult(tokenResponse, grant.refreshToken());
+    }
+
+    /**
+     * App logout: revoke Keycloak refresh token and build browser end-session URL.
+     */
+    public LogoutResponse logout(String refreshToken, String postLogoutRedirectUri) {
+        keycloakService.revokeRefreshToken(refreshToken);
+        String logoutUrl = keycloakService.buildBrowserLogoutUrl(postLogoutRedirectUri, null);
+        return new LogoutResponse(logoutUrl);
+    }
+
+    public KeycloakLoginResult refreshWithKeycloak(String refreshToken, String usernameHint) {
+        KeycloakService.TokenGrantResponse grant = keycloakService.refresh(refreshToken);
+        TokenResponse tokenResponse = createLoginResponse(
+                grant.accessToken(),
+                usernameHint != null && !usernameHint.isBlank() ? usernameHint : extractUsername(grant.accessToken())
+        );
+        tokenResponse.setExpiresIn(grant.expiresIn());
+        return new KeycloakLoginResult(tokenResponse, grant.refreshToken());
     }
 
     public String generateRefreshTokenByUsernameOrEmail(String usernameOrEmail) {
@@ -268,8 +273,7 @@ public class AuthService {
         if (user == null) {
             throw new RuntimeException("User not found");
         }
-        // Use the method with 7 days expiration and include roleId
-        return jwtService.generateRefreshToken(user.getName(), user.getRole().getName());
+        return jwtService.generateRefreshToken(usernameOrEmail, "user");
     }
     
     /**
@@ -291,7 +295,7 @@ public class AuthService {
             : 7L * 24 * 60 * 60 * 1000;   // 7 days
             
         logger.info("Refresh token expiration set to: " + (rememberMe ? "30 days" : "7 days"));
-        return jwtService.generateRefreshToken(user.getName(), user.getRole().getName(), expirationMillis);
+        return jwtService.generateRefreshToken(usernameOrEmail, "user", expirationMillis);
     }
 
     public String getAccessTokenByRefreshToken(String refreshToken) {
@@ -334,8 +338,10 @@ public class AuthService {
         Optional<UserCredential> userOptional = userCredentialRepository.findById(userId);
         if (userOptional.isPresent()) {
             UserCredential user = userOptional.get();
-            user.setPassword(passwordEncoder.encode(newPassword));
-            userCredentialRepository.save(user);
+            if (user.getKeycloakUserId() == null || user.getKeycloakUserId().isBlank()) {
+                return false;
+            }
+            keycloakService.resetUserPassword(user.getKeycloakUserId(), newPassword);
             return true;
         }
         return false;
@@ -348,13 +354,17 @@ public class AuthService {
     public BaseResponse<String> requestPasswordReset(String email, String ipAddress, String userAgent) {
         logger.info("Password reset requested for email: " + email);
         
-        Optional<UserCredential> userOptional = userCredentialRepository.findByEmail(email);
-        if (userOptional.isEmpty()) {
+        KeycloakService.KeycloakUserProfile keycloakUser = keycloakService.findUserByEmail(email);
+        if (keycloakUser == null) {
             logger.warn("Password reset requested for non-existent email: " + email);
             return new BaseResponse<>(false, null, 404, "No account found with this email address. Please check your email or sign up.", null);
         }
 
-        UserCredential user = userOptional.get();
+        UserCredential user = findUserByKeycloakUserId(keycloakUser.id());
+        if (user == null) {
+            logger.warn("Password reset requested but local profile is missing for keycloak user: " + keycloakUser.id());
+            return new BaseResponse<>(false, null, 404, "No local account profile found for this user.", null);
+        }
         
         // Invalidate any existing unused tokens for this user
         passwordResetTokenRepository.invalidateAllTokensForUser(user, LocalDateTime.now());
@@ -376,11 +386,13 @@ public class AuthService {
         resetToken.setCreatedAt(LocalDateTime.now());
         
         passwordResetTokenRepository.save(resetToken);
-        logger.info("Password reset token generated for user: " + user.getEmail() + ", expires at: " + expiresAt);
+        String recipientEmail = keycloakUser.email() != null ? keycloakUser.email() : email;
+        String displayName = buildDisplayName(keycloakUser);
+        logger.info("Password reset token generated for user: " + recipientEmail + ", expires at: " + expiresAt);
         
         // Send email with reset link
         String resetLink = resetUrl + "?token=" + token;
-        emailNotificationService.sendPasswordResetEmail(user.getEmail(), user.getName(), resetLink, tokenExpirationMinutes, ipAddress);
+        emailNotificationService.sendPasswordResetEmail(recipientEmail, displayName, resetLink, tokenExpirationMinutes, ipAddress);
         
         String successMessage = "Password reset instructions have been sent to your email address.";
         return new BaseResponse<>(true, successMessage, 0, null, null);
@@ -433,17 +445,10 @@ public class AuthService {
         for (PasswordHistory history : recentPasswords) {
             // Check if the new password matches any recent password
             if (passwordEncoder.matches(newPassword, history.getPasswordHash())) {
-                logger.warn("User attempted to reuse a recent password: " + user.getEmail());
+                logger.warn("User attempted to reuse a recent password. localUserId=" + user.getId());
                 return new BaseResponse<>(false, null, 0, 
                     "You cannot reuse a password that you've used recently. Please choose a different password.", null);
             }
-        }
-        
-        // Also check if new password matches current password
-        if (passwordEncoder.matches(newPassword, user.getPassword())) {
-            logger.warn("User attempted to reuse current password: " + user.getEmail());
-            return new BaseResponse<>(false, null, 0, 
-                "New password must be different from your current password.", null);
         }
         
         // Mark token as used
@@ -454,16 +459,19 @@ public class AuthService {
         // Store old password in history before updating
         PasswordHistory oldPasswordHistory = new PasswordHistory();
         oldPasswordHistory.setUser(user);
-        oldPasswordHistory.setPasswordHash(user.getPassword()); // Store the old hashed password
+        // Track password history locally using the newly chosen password hash.
+        oldPasswordHistory.setPasswordHash(passwordEncoder.encode(newPassword));
         oldPasswordHistory.setChangedAt(LocalDateTime.now());
         passwordHistoryRepository.save(oldPasswordHistory);
         
-        // Update password with new hash
-        String newPasswordHash = passwordEncoder.encode(newPassword);
-        user.setPassword(newPasswordHash);
-        userCredentialRepository.save(user);
+        // Update password in Keycloak (source of truth for credentials)
+        if (user.getKeycloakUserId() == null || user.getKeycloakUserId().isBlank()) {
+            logger.error("Cannot reset password: missing keycloakUserId for local userId=" + user.getId());
+            return new BaseResponse<>(false, null, 0, "Cannot reset password for this account. Contact support.", null);
+        }
+        keycloakService.resetUserPassword(user.getKeycloakUserId(), newPassword);
         
-        logger.info("Password reset successful for user: " + user.getEmail());
+        logger.info("Password reset successful for local userId: " + user.getId());
         
         // Invalidate all other reset tokens for this user (security: prevent reuse)
         passwordResetTokenRepository.invalidateAllTokensForUser(user, LocalDateTime.now());
@@ -473,7 +481,7 @@ public class AuthService {
         // We'll blacklist by username - all tokens for this user will be invalidated
         try {
             // Extract username from user
-            String username = user.getName();
+            String username = user.getId() != null ? "user-" + user.getId() : "unknown-user";
             // Blacklist all existing refresh tokens by adding them to blacklist
             // Note: Since we can't enumerate all JWT tokens, we'll use a pattern-based approach
             // For now, we'll log that sessions should be invalidated
@@ -490,7 +498,13 @@ public class AuthService {
         }
         
         // Send confirmation email
-        emailNotificationService.sendPasswordResetConfirmationEmail(user.getEmail(), user.getName());
+        KeycloakService.KeycloakUserProfile keycloakUser = keycloakService.findUserById(user.getKeycloakUserId());
+        if (keycloakUser != null && keycloakUser.email() != null) {
+            emailNotificationService.sendPasswordResetConfirmationEmail(
+                    keycloakUser.email(),
+                    buildDisplayName(keycloakUser)
+            );
+        }
         
         return new BaseResponse<>(true, "Password successfully reset. Please sign in again.", 0, null, null);
     }
@@ -500,41 +514,26 @@ public class AuthService {
      */
     private void sendEmailVerification(UserCredential user) {
         try {
-            // Ensure user is managed in the current persistence context
-            // Refresh to ensure it's attached (in case it was detached)
             UserCredential managedUser = userCredentialRepository.findById(user.getId())
                     .orElseThrow(() -> new RuntimeException("User not found: " + user.getId()));
-            
-            // Invalidate any existing unused tokens for this user
-            emailVerificationTokenRepository.invalidateAllTokensForUser(managedUser, LocalDateTime.now());
-            
-            // Generate secure token
-            String token = UUID.randomUUID().toString();
-            
-            // Create expiration time
-            LocalDateTime expiresAt = LocalDateTime.now().plusMinutes(emailVerificationTokenExpirationMinutes);
-            
-            // Save token
-            EmailVerificationToken verificationToken = new EmailVerificationToken();
-            verificationToken.setToken(token);
-            verificationToken.setUser(managedUser);
-            verificationToken.setExpiresAt(expiresAt);
-            verificationToken.setIsUsed(false);
-            verificationToken.setCreatedAt(LocalDateTime.now());
-            
-            emailVerificationTokenRepository.save(verificationToken);
-            logger.info("Email verification token generated for user: " + managedUser.getEmail() + ", expires at: " + expiresAt);
-            
-            // Send email with verification link
-            String verificationLink = emailVerificationUrl + "?token=" + token;
-            emailNotificationService.sendVerificationEmail(
-                managedUser.getEmail(), 
-                managedUser.getName(), 
-                verificationLink, 
-                emailVerificationTokenExpirationMinutes
-            );
+            if (managedUser.getKeycloakUserId() == null || managedUser.getKeycloakUserId().isBlank()) {
+                logger.error("Cannot trigger Keycloak verification email: missing keycloakUserId for local userId=" + managedUser.getId());
+                return;
+            }
+
+            KeycloakService.KeycloakUserProfile keycloakUser = keycloakService.findUserById(managedUser.getKeycloakUserId());
+            String recipientEmail = keycloakUser != null && keycloakUser.email() != null
+                    ? keycloakUser.email()
+                    : null;
+            if (recipientEmail == null || recipientEmail.isBlank()) {
+                logger.error("Cannot trigger Keycloak verification email: missing recipient for local userId=" + managedUser.getId());
+                return;
+            }
+
+            keycloakService.sendVerifyEmail(managedUser.getKeycloakUserId());
+            logger.info("Keycloak verification email triggered for user: " + recipientEmail);
         } catch (Exception e) {
-            logger.error("Failed to send email verification: " + e.getMessage());
+            logger.error("Failed to trigger Keycloak verification email: " + e.getMessage());
             // Don't throw - allow registration to succeed even if email fails
         }
     }
@@ -546,66 +545,10 @@ public class AuthService {
      */
     @Transactional
     public BaseResponse<TokenResponse> verifyEmail(String token) {
-        logger.info("Email verification requested with token");
-        
-        Optional<EmailVerificationToken> tokenOptional = emailVerificationTokenRepository.findValidToken(
-            token, LocalDateTime.now()
-        );
-        
-        if (tokenOptional.isEmpty()) {
-            logger.warn("Invalid or expired email verification token");
-            return new BaseResponse<>(false, null, 0,
-                    "Invalid or expired verification token. Please request a new verification email.", null);
-        }
-        
-        EmailVerificationToken verificationToken = tokenOptional.get();
-        UserCredential user = verificationToken.getUser();
-        
-        // Ensure this flow is only used for owner accounts (roleId = 2)
-        Integer roleId = user.getRole() != null ? user.getRole().getId() : null;
-        boolean isOwner = roleId != null && roleId == 2;
-
-        if (!isOwner) {
-            logger.warn("Email verification attempted for non-owner account: " + user.getEmail());
-            return new BaseResponse<>(false, null, 0,
-                    "Email verification is only required for salon owner accounts.", null);
-        }
-
-        // Check if email is already verified
-        if (Boolean.TRUE.equals(user.getEmailVerified())) {
-            logger.info("Email already verified for user: " + user.getEmail());
-            // Mark token as used anyway
-            verificationToken.setIsUsed(true);
-            verificationToken.setUsedAt(LocalDateTime.now());
-            emailVerificationTokenRepository.save(verificationToken);
-
-            // Even if already verified, issue an access token so the owner can continue onboarding
-            String accessToken = generateAccessTokenByUsernameOrEmail(user.getEmail());
-            TokenResponse tokenResponse = createLoginResponse(accessToken, user.getEmail());
-            return new BaseResponse<>(true, "Email is already verified", 0, null, tokenResponse);
-        }
-        
-        // Mark email as verified
-        user.setEmailVerified(true);
-        userCredentialRepository.save(user);
-        
-        // Mark email verification step as complete (for owners)
-        String roleName = user.getRole() != null ? user.getRole().getName() : null;
-        if ("owner".equalsIgnoreCase(roleName)) {
-            onboardingService.completeEmailVerification(user.getId());
-        }
-        
-        // Mark token as used
-        verificationToken.setIsUsed(true);
-        verificationToken.setUsedAt(LocalDateTime.now());
-        emailVerificationTokenRepository.save(verificationToken);
-
-        // Generate access token so the owner can immediately proceed (e.g., create salon)
-        String accessToken = generateAccessTokenByUsernameOrEmail(user.getEmail());
-        TokenResponse tokenResponse = createLoginResponse(accessToken, user.getEmail());
-
-        logger.info("Email verified successfully for user: " + user.getEmail());
-        return new BaseResponse<>(true, "Email verified successfully", 0, null, tokenResponse);
+        logger.info("Email verification endpoint called with legacy token flow while Keycloak manages verification.");
+        return new BaseResponse<>(false, null, 410,
+                "Email verification is handled by Keycloak. Please use the latest verification email and then sign in.",
+                null);
     }
 
     /**
@@ -614,25 +557,29 @@ public class AuthService {
     @Transactional
     public BaseResponse<String> resendVerificationEmail(String email) {
         logger.info("Resend email verification requested for: " + email);
-        
-        Optional<UserCredential> userOptional = userCredentialRepository.findByEmail(email);
-        if (userOptional.isEmpty()) {
+
+        KeycloakService.KeycloakUserProfile keycloakUser = keycloakService.findUserByEmail(email);
+        if (keycloakUser == null) {
             logger.warn("Resend verification requested for non-existent email: " + email);
             return new BaseResponse<>(false, null, 404, "No account found with this email address.", null);
         }
-        
-        UserCredential user = userOptional.get();
 
-        // Only salon owners (roleId = 2) require email verification
-        Integer roleId = user.getRole() != null ? user.getRole().getId() : null;
-        boolean isOwner = roleId != null && roleId == 2;
+        UserCredential user = findUserByKeycloakUserId(keycloakUser.id());
+        if (user == null) {
+            logger.warn("Resend verification requested but local profile missing for keycloak user: " + keycloakUser.id());
+            return new BaseResponse<>(false, null, 404, "No local account profile found for this user.", null);
+        }
+
+        // Only salon owners require email verification
+        boolean isOwner = keycloakUser.realmRoles() != null
+                && keycloakUser.realmRoles().stream().anyMatch(r -> "owner".equalsIgnoreCase(r));
 
         if (!isOwner) {
             logger.warn("Resend verification requested for non-owner account: " + email);
             return new BaseResponse<>(false, null, 0, "Email verification is not required for this account.", null);
         }
         
-        if (Boolean.TRUE.equals(user.getEmailVerified())) {
+        if (Boolean.TRUE.equals(keycloakUser.emailVerified())) {
             logger.info("Email already verified for user: " + email);
             return new BaseResponse<>(false, null, 0, "Email is already verified", null);
         }
@@ -647,7 +594,11 @@ public class AuthService {
      * Create login response with onboarding status (for owners)
      */
     public TokenResponse createLoginResponse(String accessToken, String usernameOrEmail) {
-        UserCredential user = findUserByUsernameOrEmail(usernameOrEmail);
+        String keycloakUserId = extractSubject(accessToken);
+        UserCredential user = findUserByKeycloakUserId(keycloakUserId);
+        if (user == null) {
+            user = findUserByUsernameOrEmail(usernameOrEmail);
+        }
         if (user == null) {
             return new TokenResponse(accessToken, 7200L);
         }
@@ -655,9 +606,24 @@ public class AuthService {
         // Build user payload for frontend
         LoginUserResponse userResponse = new LoginUserResponse();
         userResponse.setId(user.getId());
-        userResponse.setFullName(user.getName());
+        KeycloakService.KeycloakUserProfile profile = extractSubject(accessToken) != null
+                ? keycloakService.findUserById(extractSubject(accessToken))
+                : keycloakService.findUserByEmail(usernameOrEmail);
+        userResponse.setFullName(buildDisplayName(profile));
 
-        String roleName = user.getRole() != null ? user.getRole().getName() : null;
+        String roleName = extractPrimaryRole(accessToken);
+        if (profile != null && profile.realmRoles() != null) {
+            if (profile.realmRoles().stream().anyMatch(r -> "owner".equalsIgnoreCase(r))) {
+                roleName = "owner";
+            } else if (roleName == null) {
+                roleName = profile.realmRoles().stream()
+                        .filter(r -> !r.startsWith("default-roles-"))
+                        .filter(r -> !"offline_access".equalsIgnoreCase(r))
+                        .filter(r -> !"uma_authorization".equalsIgnoreCase(r))
+                        .findFirst()
+                        .orElse(null);
+            }
+        }
         if (roleName != null) {
             userResponse.setRole(roleName.toLowerCase());
         }
@@ -666,19 +632,31 @@ public class AuthService {
 
         // Owners: include onboarding status and, if available, salon info
         if ("owner".equalsIgnoreCase(normalizedRole)) {
-            OnboardingStatusResponse onboardingStatus = onboardingService.getOnboardingStatus(user.getId());
+            Boolean emailVerified = extractEmailVerified(accessToken);
+            if (!Boolean.TRUE.equals(emailVerified)) {
+                KeycloakService.KeycloakUserProfile kcProfile = profile != null
+                        ? profile
+                        : (keycloakUserId != null ? keycloakService.findUserById(keycloakUserId) : null);
+                if (kcProfile != null && Boolean.TRUE.equals(kcProfile.emailVerified())) {
+                    emailVerified = true;
+                }
+            }
+            Optional<OwnerSalonSummaryDto> salonSummary = salonClient.getOwnerSalonSummary(user.getId());
+            OnboardingStatusResponse onboardingStatus = onboardingService.getOnboardingStatus(
+                    user.getId(), emailVerified, true, salonSummary);
 
-            // Try to fetch salon publicId for this owner
-            String saloonId = salonClient.getSalonPublicIdForOwner(user.getId());
-            if (saloonId != null) {
-                userResponse.setSaloonId(saloonId);
-
-                // Derive a simple salon status from onboarding progress
+            salonSummary.ifPresent(summary -> {
+                if (summary.getSaloonId() != null) {
+                    userResponse.setSaloonId(summary.getSaloonId());
+                }
+                if (summary.getInternalSaloonId() != null) {
+                    userResponse.setInternalSaloonId(summary.getInternalSaloonId());
+                }
                 String salonStatus = Boolean.TRUE.equals(onboardingStatus.getIsOnboardingComplete())
                         ? "active"
                         : "pending_setup";
                 userResponse.setSalonStatus(salonStatus);
-            }
+            });
 
             return new TokenResponse(accessToken, 7200L, userResponse, onboardingStatus);
         }
@@ -697,5 +675,180 @@ public class AuthService {
             return true;
         }
         return false;
+    }
+
+    public OnboardingStatusResponse getOnboardingStatusForUser(String keycloakUserId, String usernameOrEmail) {
+        UserCredential user = findUserByKeycloakUserId(keycloakUserId);
+        if (user == null) {
+            user = findUserByUsernameOrEmail(usernameOrEmail);
+        }
+        if (user == null) {
+            return null;
+        }
+        KeycloakService.KeycloakUserProfile keycloakUser = keycloakService.findUserById(user.getKeycloakUserId());
+        if (keycloakUser == null && usernameOrEmail != null && !usernameOrEmail.isBlank()) {
+            keycloakUser = keycloakService.findUserByEmail(usernameOrEmail);
+        }
+        if (keycloakUser == null) {
+            return onboardingService.getOnboardingStatus(user.getId());
+        }
+        boolean isOwner = keycloakUser.realmRoles() != null
+                && keycloakUser.realmRoles().stream().anyMatch(r -> "owner".equalsIgnoreCase(r));
+        return onboardingService.getOnboardingStatus(user.getId(), keycloakUser.emailVerified(), isOwner);
+    }
+
+    public UserCredential ensureLocalUserProfilePublic(String keycloakUserId) {
+        return ensureLocalUserProfile(keycloakUserId);
+    }
+
+    /**
+     * Login hint from a Keycloak RS256 access token (email / preferred_username), not HS256 app JWT.
+     */
+    public String extractUsernameFromAccessToken(String accessToken) {
+        JsonNode payload = parseJwtPayload(accessToken);
+        if (payload == null) {
+            return null;
+        }
+        String preferred = textClaim(payload, "preferred_username");
+        if (preferred != null && !preferred.isBlank()) {
+            return preferred;
+        }
+        String email = textClaim(payload, "email");
+        if (email != null && !email.isBlank()) {
+            return email;
+        }
+        String username = textClaim(payload, "username");
+        if (username != null && !username.isBlank()) {
+            return username;
+        }
+        String sub = textClaim(payload, "sub");
+        if (sub != null && !sub.isBlank()) {
+            KeycloakService.KeycloakUserProfile profile = keycloakService.findUserById(sub);
+            if (profile != null) {
+                if (profile.email() != null && !profile.email().isBlank()) {
+                    return profile.email();
+                }
+                if (profile.username() != null && !profile.username().isBlank()) {
+                    return profile.username();
+                }
+            }
+        }
+        return null;
+    }
+
+    public String extractSubjectFromAccessToken(String accessToken) {
+        return extractSubject(accessToken);
+    }
+
+    private static String textClaim(JsonNode payload, String name) {
+        if (payload == null || name == null) {
+            return null;
+        }
+        JsonNode node = payload.get(name);
+        return node != null && !node.isNull() ? node.asText() : null;
+    }
+
+    private UserCredential ensureLocalUserProfile(String keycloakUserId) {
+        UserCredential existing = findUserByKeycloakUserId(keycloakUserId);
+        if (existing != null) {
+            return existing;
+        }
+        UserCredential user = new UserCredential();
+        user.setKeycloakUserId(keycloakUserId);
+        user.setOnboardingStatus("{}");
+        return userCredentialRepository.save(user);
+    }
+
+    private String mapRoleNameForKeycloak(String roleName) {
+        if (roleName == null) {
+            return null;
+        }
+        return roleName.trim().toLowerCase();
+    }
+
+    private String extractUsername(String token) {
+        try {
+            return jwtService.extractUsername(token);
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    private JsonNode parseJwtPayload(String token) {
+        try {
+            if (token == null || token.isBlank()) {
+                return null;
+            }
+            String[] parts = token.split("\\.");
+            if (parts.length < 2) {
+                return null;
+            }
+            byte[] decoded = Base64.getUrlDecoder().decode(parts[1]);
+            return objectMapper.readTree(decoded);
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    private String extractSubject(String token) {
+        JsonNode payload = parseJwtPayload(token);
+        if (payload == null) {
+            return null;
+        }
+        JsonNode sub = payload.get("sub");
+        return sub != null && !sub.isNull() ? sub.asText() : null;
+    }
+
+    private Boolean extractEmailVerified(String token) {
+        JsonNode payload = parseJwtPayload(token);
+        if (payload == null) {
+            return null;
+        }
+        JsonNode emailVerified = payload.get("email_verified");
+        return emailVerified != null && !emailVerified.isNull() ? emailVerified.asBoolean() : null;
+    }
+
+    private String extractPrimaryRole(String token) {
+        JsonNode payload = parseJwtPayload(token);
+        if (payload == null) {
+            return null;
+        }
+        JsonNode realmAccess = payload.get("realm_access");
+        if (realmAccess == null || realmAccess.isNull()) {
+            return null;
+        }
+        JsonNode roles = realmAccess.get("roles");
+        if (roles == null || !roles.isArray() || roles.isEmpty()) {
+            return null;
+        }
+        for (JsonNode role : roles) {
+            String value = role.asText();
+            if ("owner".equalsIgnoreCase(value)) {
+                return "owner";
+            }
+        }
+        return roles.get(0).asText();
+    }
+
+    private String buildDisplayName(KeycloakService.KeycloakUserProfile profile) {
+        if (profile == null) {
+            return "User";
+        }
+        String firstName = profile.firstName() != null ? profile.firstName().trim() : "";
+        String lastName = profile.lastName() != null ? profile.lastName().trim() : "";
+        String fullName = (firstName + " " + lastName).trim();
+        if (!fullName.isEmpty()) {
+            return fullName;
+        }
+        if (profile.username() != null && !profile.username().isBlank()) {
+            return profile.username();
+        }
+        if (profile.email() != null && !profile.email().isBlank()) {
+            return profile.email();
+        }
+        return "User";
+    }
+
+    public record KeycloakLoginResult(TokenResponse tokenResponse, String refreshToken) {
     }
 }

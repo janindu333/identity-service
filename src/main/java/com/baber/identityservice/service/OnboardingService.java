@@ -5,7 +5,6 @@ import com.baber.identityservice.entity.UserCredential;
 import com.baber.identityservice.enums.OnboardingStep;
 import com.baber.identityservice.repository.UserCredentialRepository;
 import com.baber.identityservice.dto.OwnerSalonSummaryDto;
-import com.baber.identityservice.service.SalonClient;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
@@ -38,6 +37,25 @@ public class OnboardingService {
      * Get onboarding status for a user
      */
     public OnboardingStatusResponse getOnboardingStatus(Long userId) {
+        return getOnboardingStatus(userId, null, null, null);
+    }
+
+    /**
+     * Get onboarding status for a user, optionally using Keycloak-sourced
+     * identity signals to avoid relying on local auth columns.
+     */
+    public OnboardingStatusResponse getOnboardingStatus(Long userId, Boolean emailVerifiedOverride, Boolean isOwnerOverride) {
+        return getOnboardingStatus(userId, emailVerifiedOverride, isOwnerOverride, null);
+    }
+
+    /**
+     * @param prefetchedSalonSummary when provided (e.g. from login), avoids a second call to saloon-service
+     */
+    public OnboardingStatusResponse getOnboardingStatus(
+            Long userId,
+            Boolean emailVerifiedOverride,
+            Boolean isOwnerOverride,
+            Optional<OwnerSalonSummaryDto> prefetchedSalonSummary) {
         Optional<UserCredential> userOpt = userCredentialRepository.findById(userId);
         if (userOpt.isEmpty()) {
             return null;
@@ -47,7 +65,8 @@ public class OnboardingService {
         Map<String, Boolean> completedSteps = parseOnboardingStatus(user.getOnboardingStatus());
         
         // Auto-complete email verification if user's email is verified
-        if (user.getEmailVerified() && !completedSteps.getOrDefault("email_verification", false)) {
+        boolean emailVerified = emailVerifiedOverride != null ? emailVerifiedOverride : false;
+        if (emailVerified && !completedSteps.getOrDefault("email_verification", false)) {
             completedSteps.put("email_verification", true);
             // Save updated status
             saveOnboardingStatus(user, completedSteps);
@@ -55,11 +74,12 @@ public class OnboardingService {
 
         // If this is an owner, sync onboarding steps from saloon-service (salon exists, business hours, services, staff invite).
         try {
-            String roleName = user.getRole() != null ? user.getRole().getName() : null;
-            boolean isOwner = roleName != null && "owner".equalsIgnoreCase(roleName);
+            boolean isOwner = isOwnerOverride != null ? isOwnerOverride : false;
 
             if (isOwner) {
-                Optional<OwnerSalonSummaryDto> summaryOpt = salonClient.getOwnerSalonSummary(user.getId());
+                Optional<OwnerSalonSummaryDto> summaryOpt = prefetchedSalonSummary != null
+                        ? prefetchedSalonSummary
+                        : salonClient.getOwnerSalonSummary(user.getId());
                 if (summaryOpt.isPresent()) {
                     OwnerSalonSummaryDto summary = summaryOpt.get();
                     boolean updated = false;
@@ -79,6 +99,10 @@ public class OnboardingService {
                         completedSteps.put("staff_invitation", true);
                         updated = true;
                     }
+                    if (Boolean.TRUE.equals(summary.getHasPaymentSetup()) && !completedSteps.getOrDefault("payment_setup", false)) {
+                        completedSteps.put("payment_setup", true);
+                        updated = true;
+                    }
                     if (updated) {
                         saveOnboardingStatus(user, completedSteps);
                     }
@@ -87,10 +111,9 @@ public class OnboardingService {
         } catch (Exception e) {
             logger.warn("Failed to sync onboarding steps from saloon-service for userId={}", userId, e);
         }
-        
-        // Ensure optional payment step key is always present in the map
-        completedSteps.putIfAbsent("payment_setup", false);
-        
+
+        normalizeCompletedStepsMap(completedSteps);
+
         // Calculate statistics
         int totalRequired = 0;
         int completedRequired = 0;
@@ -114,16 +137,16 @@ public class OnboardingService {
         
         boolean isComplete = completedRequired == totalRequired;
         
-        // Determine current step: use "complete" when all required steps are done
-        String currentStep = user.getCurrentOnboardingStep();
+        // Always derive current step from completed steps (avoid stale "salon_creation" after login sync).
+        String currentStep;
         if (isComplete) {
             currentStep = "complete";
-            if (!"complete".equals(user.getCurrentOnboardingStep())) {
-                user.setCurrentOnboardingStep("complete");
-                userCredentialRepository.save(user);
-            }
-        } else if (currentStep == null || currentStep.isEmpty()) {
+        } else {
             currentStep = nextRequiredStep != null ? nextRequiredStep : "email_verification";
+        }
+        if (!currentStep.equals(user.getCurrentOnboardingStep())) {
+            user.setCurrentOnboardingStep(currentStep);
+            userCredentialRepository.save(user);
         }
         
         OnboardingStatusResponse response = new OnboardingStatusResponse();
@@ -188,6 +211,24 @@ public class OnboardingService {
         completeOnboardingStep(userId, "salon_creation");
     }
     
+    /**
+     * Every defined onboarding step appears explicitly in API responses (true/false).
+     * Adds {@code staff_invite} as an alias of {@code staff_invitation} for older clients.
+     * Drops removed/legacy keys (e.g. {@code profile_completion}).
+     */
+    private void normalizeCompletedStepsMap(Map<String, Boolean> completedSteps) {
+        Map<String, Boolean> normalized = new HashMap<>();
+        for (OnboardingStep step : OnboardingStep.values()) {
+            normalized.put(step.getKey(), Boolean.TRUE.equals(completedSteps.get(step.getKey())));
+        }
+        boolean staffDone = Boolean.TRUE.equals(completedSteps.get("staff_invitation"))
+                || Boolean.TRUE.equals(completedSteps.get("staff_invite"));
+        normalized.put("staff_invitation", staffDone);
+        normalized.put("staff_invite", staffDone);
+        completedSteps.clear();
+        completedSteps.putAll(normalized);
+    }
+
     /**
      * Parse onboarding status JSON string to Map
      */

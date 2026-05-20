@@ -2,6 +2,8 @@ package com.baber.identityservice.service;
 
 import com.baber.identityservice.config.ServiceLogger;
 import com.baber.identityservice.dto.OwnerSalonSummaryDto;
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestTemplate;
@@ -22,8 +24,11 @@ public class SalonClient {
 
     private final RestTemplate restTemplate;
 
+    @Value("${saloon.service.url:http://saloon-service:8083}")
+    private String saloonServiceUrl;
+
     @Autowired
-    public SalonClient(RestTemplate restTemplate) {
+    public SalonClient(@Qualifier("internalServiceRestTemplate") RestTemplate restTemplate) {
         this.restTemplate = restTemplate;
     }
 
@@ -35,8 +40,7 @@ public class SalonClient {
      */
     public String getSalonPublicIdForOwner(Long ownerId) {
         try {
-            // Uses Eureka service ID "SALOON-SERVICE" (matches existing config)
-            String url = "http://SALOON-SERVICE/api/saloon/owner/{ownerId}/summary";
+            String url = saloonServiceUrl + "/api/saloon/owner/{ownerId}/summary";
             @SuppressWarnings("unchecked")
             Map<String, Object> response = restTemplate.getForObject(url, Map.class, ownerId);
 
@@ -69,8 +73,17 @@ public class SalonClient {
      * Used by OnboardingService to sync business_hours, services_setup, staff_invitation from saloon-service.
      */
     public Optional<OwnerSalonSummaryDto> getOwnerSalonSummary(Long ownerId) {
+        Optional<OwnerSalonSummaryDto> first = fetchOwnerSalonSummary(ownerId);
+        if (first.isPresent()) {
+            return first;
+        }
+        logger.info("SalonClient: retrying owner salon summary for ownerId=" + ownerId);
+        return fetchOwnerSalonSummary(ownerId);
+    }
+
+    private Optional<OwnerSalonSummaryDto> fetchOwnerSalonSummary(Long ownerId) {
         try {
-            String url = "http://SALOON-SERVICE/api/saloon/owner/{ownerId}/summary";
+            String url = saloonServiceUrl + "/api/saloon/owner/{ownerId}/summary";
             @SuppressWarnings("unchecked")
             Map<String, Object> response = restTemplate.getForObject(url, Map.class, ownerId);
 
@@ -90,11 +103,24 @@ public class SalonClient {
 
             Object saloonIdObj = dataMap.get("saloonId");
             String saloonId = saloonIdObj != null ? saloonIdObj.toString() : null;
+            if (saloonId == null || saloonId.isBlank()) {
+                return Optional.empty();
+            }
             Boolean hasBusinessHours = asBoolean(dataMap.get("hasBusinessHours"));
             Boolean hasServices = asBoolean(dataMap.get("hasServices"));
             Boolean hasStaffInvite = asBoolean(dataMap.get("hasStaffInvite"));
+            Boolean hasPaymentSetup = asBoolean(dataMap.get("hasPaymentSetup"));
 
-            return Optional.of(new OwnerSalonSummaryDto(saloonId, hasBusinessHours, hasServices, hasStaffInvite));
+            Long internalSaloonId = null;
+            Object internalIdObj = dataMap.get("internalSaloonId");
+            if (internalIdObj instanceof Number n) {
+                internalSaloonId = n.longValue();
+            } else if (internalIdObj instanceof String s && !s.isBlank()) {
+                internalSaloonId = Long.parseLong(s.trim());
+            }
+
+            return Optional.of(new OwnerSalonSummaryDto(
+                    saloonId, internalSaloonId, hasBusinessHours, hasServices, hasStaffInvite, hasPaymentSetup));
         } catch (Exception e) {
             logger.warn("SalonClient: failed to fetch owner salon summary for ownerId=" + ownerId + ", error=" + e.getMessage());
             return Optional.empty();

@@ -1,7 +1,6 @@
 package com.baber.identityservice.service;
 
 import com.baber.identityservice.entity.UserCredential;
-import com.baber.identityservice.entity.Role;
 import org.springframework.security.core.GrantedAuthority;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.userdetails.UserDetails;
@@ -13,18 +12,17 @@ public class CustomUserDetails implements UserDetails {
 
     private String username;
     private String password;
-    private Role role; // Changed from String to Role
+    private String role;
 
     public CustomUserDetails(UserCredential userCredential) {
-        this.username = userCredential.getName();
-        this.password = userCredential.getPassword();
-        this.role = userCredential.getRole(); // Now assigns Role entity
+        this.username = userCredential.getKeycloakUserId();
+        this.password = "{KEYCLOAK_MANAGED}";
+        this.role = "USER";
     }
 
     @Override
     public Collection<? extends GrantedAuthority> getAuthorities() {
-        // Extract role name from Role entity
-        String roleName = (role != null) ? role.getName() : "USER";
+        String roleName = (role != null) ? role : "USER";
         return List.of(new SimpleGrantedAuthority("ROLE_" + roleName));
     }
 
@@ -58,13 +56,11 @@ public class CustomUserDetails implements UserDetails {
         return true;
     }
     
-    // Getter for role entity if needed elsewhere
-    public Role getRole() {
+    public String getRole() {
         return role;
     }
     
-    // Getter for role name as string
     public String getRoleName() {
-        return (role != null) ? role.getName() : "USER";
+        return (role != null) ? role : "USER";
     }
 } 

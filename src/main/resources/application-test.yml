@@ -19,10 +19,5 @@ logging:
       hibernate:
         SQL: debug
 
-eureka:
-  client:
-    serviceUrl:
-      defaultZone: http://eureka:password@localhost:8761/eureka
-
 server:
   port: 0

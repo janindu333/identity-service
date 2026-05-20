@@ -1,0 +1,60 @@
+body.login-pf {
+  background: radial-gradient(circle at 20% 20%, #1a2136 0%, #0d111d 45%, #090c14 100%) !important;
+  color: #e9edf7 !important;
+}
+
+#kc-header-wrapper {
+  color: #ffb366 !important;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+#kc-page-title,
+.login-pf-page .card-pf p,
+.login-pf-page .instruction {
+  color: #e9edf7 !important;
+}
+
+.login-pf-page .card-pf {
+  background: linear-gradient(180deg, #161c2d 0%, #111727 100%) !important;
+  border: 1px solid #2a3045 !important;
+  border-radius: 14px !important;
+  box-shadow: 0 20px 45px rgba(0, 0, 0, 0.45) !important;
+}
+
+.pf-c-button.pf-m-primary,
+#kc-login,
+#kc-accept,
+input[type="submit"].btn-primary {
+  background: #ff8a1f !important;
+  border-color: #ff8a1f !important;
+  color: #111214 !important;
+  border-radius: 10px !important;
+  font-weight: 700 !important;
+}
+
+.pf-c-button.pf-m-primary:hover,
+#kc-login:hover,
+#kc-accept:hover,
+input[type="submit"].btn-primary:hover {
+  background: #ffa247 !important;
+  border-color: #ffa247 !important;
+}
+
+a {
+  color: #ffb366 !important;
+}
+
+.alert-success {
+  background-color: rgba(10, 106, 52, 0.24) !important;
+  border-color: rgba(42, 183, 108, 0.35) !important;
+  color: #b2ffd6 !important;
+}
+
+.alert-error,
+.alert-danger {
+  background-color: rgba(157, 36, 36, 0.24) !important;
+  border-color: rgba(250, 99, 99, 0.35) !important;
+  color: #ffd1d1 !important;
+}

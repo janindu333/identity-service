@@ -11,20 +11,22 @@ import com.baber.identityservice.dto.TokenResponse;
 import com.baber.identityservice.dto.RegistrationResult;
 import com.baber.identityservice.dto.UserRegistrationRequest;
 import com.baber.identityservice.dto.ValidateTokenResponse;
+import com.baber.identityservice.dto.LogoutResponse;
 import com.baber.identityservice.dto.OnboardingStatusResponse;
+import com.baber.identityservice.entity.UserCredential;
 import com.baber.identityservice.service.AuthRequest;
 import com.baber.identityservice.service.AuthService;
 import com.baber.identityservice.service.RateLimiterService;
 import com.baber.identityservice.service.RateLimiterService.RateLimitResult;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.security.authentication.AuthenticationManager;
-import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.Authentication;
+import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.web.bind.annotation.*;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.security.SecurityRequirement;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
 import org.springframework.http.ResponseCookie;
 import jakarta.servlet.http.HttpServletResponse;
 import jakarta.servlet.http.HttpServletRequest;
@@ -34,10 +36,13 @@ import jakarta.servlet.http.Cookie;
 @RequestMapping("/auth") 
 public class AuthController {
     private static final ServiceLogger logger = new ServiceLogger(AuthController.class);
+
+    private static final String REFRESH_TOKEN_COOKIE = "refreshToken";
+    /** Persists login-time remember-me so refresh can rotate cookies with the same max-age. */
+    private static final String REMEMBER_ME_COOKIE = "rememberMe";
+
     @Autowired
     private AuthService service;
-    @Autowired
-    private AuthenticationManager authenticationManager;
     @Autowired
     private RateLimiterService rateLimiterService;
     @Autowired
@@ -114,60 +119,91 @@ public class AuthController {
         }
 
         try {
-            Authentication authenticate = authenticationManager.authenticate(
-                new UsernamePasswordAuthenticationToken(authRequest.getUsernameOrEmail(), authRequest.getPassword()));
+            boolean rememberMe = authRequest.getRememberMe() != null && authRequest.getRememberMe();
+            AuthService.KeycloakLoginResult keycloakLoginResult =
+                    service.loginWithKeycloak(
+                            authRequest.getUsernameOrEmail(),
+                            authRequest.getPassword(),
+                            rememberMe);
 
-            if (authenticate.isAuthenticated()) {
-                // Generate access token (always 2 hours)
-                String accessToken = service.generateAccessTokenByUsernameOrEmail(authRequest.getUsernameOrEmail());
-                
-                // Generate refresh token with expiration based on rememberMe flag
-                boolean rememberMe = authRequest.getRememberMe() != null && authRequest.getRememberMe();
-                String refreshToken = service.generateRefreshTokenByUsernameOrEmail(
-                    authRequest.getUsernameOrEmail(), rememberMe);
-                
-                // Set refresh token in HTTP-only cookie
-                setRefreshTokenCookie(response, refreshToken, rememberMe);
-                
-                // Get user and onboarding status for owners
-                TokenResponse tokenResponse = service.createLoginResponse(accessToken, authRequest.getUsernameOrEmail());
-                
-                logger.info("API: /login, Method: POST, Status: 200, Response Time: "
-                        + (System.currentTimeMillis() - startTime) + "ms, RememberMe: " + rememberMe);
-                return new BaseResponse<>(true, null, 0, null, tokenResponse);
-            } else {
-                logger.error("API: /login, Method: POST, Status: 401, Response Time: "
-                        + (System.currentTimeMillis() - startTime) + "ms");
-                return new BaseResponse<>(false, null, 0, "Invalid password", null);
-            }
+            setRefreshTokenCookie(response, keycloakLoginResult.refreshToken(), rememberMe);
+            setRememberMePreferenceCookie(response, rememberMe);
+
+            logger.info("API: /login, Method: POST, Status: 200, Response Time: "
+                    + (System.currentTimeMillis() - startTime) + "ms, RememberMe: " + rememberMe);
+            return new BaseResponse<>(true, null, 0, null, keycloakLoginResult.tokenResponse());
+        } catch (org.springframework.web.client.HttpClientErrorException.Unauthorized e) {
+            logger.warn("API: /login, Method: POST, Status: 401, Response Time: "
+                    + (System.currentTimeMillis() - startTime) + "ms");
+            return new BaseResponse<>(false, null, 401, "User or password is not matched", null);
         } catch (Exception e) {
             logger.error("API: /login, Method: POST, Status: 500, Response Time: "
                     + (System.currentTimeMillis() - startTime) + "ms, Error: " + e.getMessage());
-            e.printStackTrace();
-            return new BaseResponse<>(false, null, 0, "User or password is not matched", null);
+            return new BaseResponse<>(false, null, 500, "Login failed at identity provider", null);
         }
     }
     
+    private static int refreshCookieMaxAgeSeconds(boolean rememberMe) {
+        return rememberMe
+                ? 30 * 24 * 60 * 60
+                : 7 * 24 * 60 * 60;
+    }
+
+    /**
+     * HTTP-only preference so {@link #refreshAccessToken} can re-apply the same max-age when rotating the refresh cookie.
+     */
+    private void setRememberMePreferenceCookie(HttpServletResponse response, boolean rememberMe) {
+        int maxAge = refreshCookieMaxAgeSeconds(rememberMe);
+        ResponseCookie cookie = ResponseCookie.from(REMEMBER_ME_COOKIE, rememberMe ? "true" : "false")
+                .httpOnly(true)
+                .secure(true)
+                .path("/")
+                .maxAge(maxAge)
+                .sameSite("Strict")
+                .build();
+        response.addHeader(HttpHeaders.SET_COOKIE, cookie.toString());
+    }
+
+    private boolean getRememberMeFromCookie(HttpServletRequest request) {
+        Cookie[] cookies = request.getCookies();
+        if (cookies == null) {
+            return false;
+        }
+        for (Cookie c : cookies) {
+            if (REMEMBER_ME_COOKIE.equals(c.getName())) {
+                String v = c.getValue();
+                return v != null && ("true".equalsIgnoreCase(v) || "1".equals(v));
+            }
+        }
+        return false;
+    }
+
+    private void clearRememberMeCookie(HttpServletResponse response) {
+        ResponseCookie cookie = ResponseCookie.from(REMEMBER_ME_COOKIE, "")
+                .httpOnly(true)
+                .secure(true)
+                .path("/")
+                .maxAge(0)
+                .sameSite("Strict")
+                .build();
+        response.addHeader(HttpHeaders.SET_COOKIE, cookie.toString());
+    }
+
     /**
      * Helper method to set refresh token as HTTP-only cookie
-     * @param response - HTTP response
-     * @param refreshToken - JWT refresh token
-     * @param rememberMe - if true, cookie expires in 30 days; otherwise 7 days
+     * @param rememberMe - if true, cookie expires in 30 days; otherwise 7 days (browser retention; Keycloak still sets token TTL)
      */
     private void setRefreshTokenCookie(HttpServletResponse response, String refreshToken, boolean rememberMe) {
-        int maxAge = rememberMe 
-            ? 30 * 24 * 60 * 60  // 30 days in seconds
-            : 7 * 24 * 60 * 60;   // 7 days in seconds
-        
-        // Create HTTP-only, Secure cookie
-        ResponseCookie cookie = ResponseCookie.from("refreshToken", refreshToken)
-            .httpOnly(true)           // Cannot be accessed by JavaScript (XSS protection)
-            .secure(true)             // Only sent over HTTPS (set to false for localhost testing)
-            .path("/")                // Available for all paths
-            .maxAge(maxAge)           // Cookie expiration
-            .sameSite("Strict")       // CSRF protection
+        int maxAge = refreshCookieMaxAgeSeconds(rememberMe);
+
+        ResponseCookie cookie = ResponseCookie.from(REFRESH_TOKEN_COOKIE, refreshToken)
+            .httpOnly(true)
+            .secure(true)
+            .path("/")
+            .maxAge(maxAge)
+            .sameSite("Strict")
             .build();
-        
+
         response.addHeader(HttpHeaders.SET_COOKIE, cookie.toString());
         logger.info("Refresh token cookie set with expiration: " + (rememberMe ? "30 days" : "7 days"));
     }
@@ -180,10 +216,10 @@ public class AuthController {
     public BaseResponse<String> getAccessTokenByRefreshToken(@RequestParam("refreshToken") String refreshToken) {
         logger.apiRequest("Refresh token request received (legacy endpoint)");
         if (refreshToken != null && !refreshToken.isEmpty()) {
-            String accessToken = service.getAccessTokenByRefreshToken(refreshToken);
-            if (accessToken != null) {
+            AuthService.KeycloakLoginResult refreshed = service.refreshWithKeycloak(refreshToken, null);
+            if (refreshed != null && refreshed.tokenResponse() != null) {
                 logger.info("Access token generated successfully from refresh token");
-                return new BaseResponse<>(true, "Success", 0, null, accessToken);
+                return new BaseResponse<>(true, "Success", 0, null, refreshed.tokenResponse().getAccessToken());
             } else {
                 logger.warn("Invalid refresh token provided");
                 return new BaseResponse<>(false, null, 0, "Refresh token is not valid", null);
@@ -225,12 +261,17 @@ public class AuthController {
         }
         
         // Generate new access token
-        String accessToken = service.getAccessTokenByRefreshToken(refreshToken);
-        
-        if (accessToken != null) {
+        boolean rememberMe = getRememberMeFromCookie(request);
+
+        AuthService.KeycloakLoginResult refreshed = service.refreshWithKeycloak(refreshToken, null);
+        if (refreshed != null && refreshed.tokenResponse() != null) {
             logger.info("Access token generated successfully from cookie refresh token");
-            TokenResponse tokenResponse = new TokenResponse(accessToken, 7200L); // 2 hours
-            return new BaseResponse<>(true, null, 0, null, tokenResponse);
+            String newRefreshToken = refreshed.refreshToken();
+            if (newRefreshToken != null && !newRefreshToken.isBlank()) {
+                setRefreshTokenCookie(response, newRefreshToken, rememberMe);
+            }
+            setRememberMePreferenceCookie(response, rememberMe);
+            return new BaseResponse<>(true, null, 0, null, refreshed.tokenResponse());
         } else {
             logger.warn("Invalid refresh token from cookie");
             return new BaseResponse<>(false, null, 0, "Refresh token is not valid or expired", null);
@@ -248,25 +289,33 @@ public class AuthController {
     }
     
     /**
-     * Logout endpoint - clears the refresh token cookie
+     * Logout: clears app cookies, revokes Keycloak refresh token, returns browser logout URL for SSO.
      */
     @PostMapping("/logout")
-    public BaseResponse<String> logout(HttpServletResponse response) {
+    @Operation(summary = "Logout",
+            description = "Clears cookies and returns keycloakLogoutUrl to end Keycloak/Google SSO in the browser.")
+    public BaseResponse<LogoutResponse> logout(
+            @RequestParam(value = "postLogoutRedirectUri", required = false) String postLogoutRedirectUri,
+            HttpServletRequest request,
+            HttpServletResponse response) {
         logger.apiRequest("Logout request received");
-        
-        // Clear refresh token cookie by setting maxAge to 0
-        ResponseCookie cookie = ResponseCookie.from("refreshToken", "")
+
+        String refreshToken = getRefreshTokenFromCookie(request);
+        LogoutResponse logoutResponse = service.logout(refreshToken, postLogoutRedirectUri);
+
+        ResponseCookie cookie = ResponseCookie.from(REFRESH_TOKEN_COOKIE, "")
             .httpOnly(true)
             .secure(true)
             .path("/")
-            .maxAge(0)              // Expire immediately
+            .maxAge(0)
             .sameSite("Strict")
             .build();
-        
+
         response.addHeader(HttpHeaders.SET_COOKIE, cookie.toString());
-        logger.info("User logged out successfully, refresh token cookie cleared");
-        
-        return new BaseResponse<>(true, "Logged out successfully", 0, null, null);
+        clearRememberMeCookie(response);
+        logger.info("User logged out successfully, refresh token and remember-me cookies cleared");
+
+        return new BaseResponse<>(true, "Logged out successfully", 0, null, logoutResponse);
     }
     
     /**
@@ -278,7 +327,7 @@ public class AuthController {
         Cookie[] cookies = request.getCookies();
         if (cookies != null) {
             for (Cookie cookie : cookies) {
-                if ("refreshToken".equals(cookie.getName())) {
+                if (REFRESH_TOKEN_COOKIE.equals(cookie.getName())) {
                     return cookie.getValue();
                 }
             }
@@ -428,10 +477,63 @@ public class AuthController {
      */
     @Operation(security = { @SecurityRequirement(name = "bearerAuth") })
     @GetMapping("/onboarding/status")
-    public BaseResponse<OnboardingStatusResponse> getOnboardingStatus() {
+    public BaseResponse<OnboardingStatusResponse> getOnboardingStatus(Authentication authentication) {
         logger.apiRequest("Get onboarding status requested");
-        // Note: User ID should be extracted from JWT token in a real implementation
-        // For now, this endpoint structure is ready - needs user context extraction
-        return new BaseResponse<>(false, null, 0, "Endpoint needs user context implementation", null);
+        if (authentication == null || !(authentication.getPrincipal() instanceof Jwt jwt)) {
+            return new BaseResponse<>(false, null, 401, "Unauthorized", null);
+        }
+
+        String keycloakUserId = jwt.getSubject();
+        String usernameOrEmail = jwt.getClaimAsString("preferred_username");
+        if (usernameOrEmail == null || usernameOrEmail.isBlank()) {
+            usernameOrEmail = jwt.getClaimAsString("email");
+        }
+        if ((usernameOrEmail == null || usernameOrEmail.isBlank()) &&
+                (keycloakUserId == null || keycloakUserId.isBlank())) {
+            usernameOrEmail = jwt.getSubject();
+        }
+
+        if ((usernameOrEmail == null || usernameOrEmail.isBlank()) &&
+                (keycloakUserId == null || keycloakUserId.isBlank())) {
+            return new BaseResponse<>(false, null, 400, "Unable to resolve user identity from token", null);
+        }
+
+        OnboardingStatusResponse status = service.getOnboardingStatusForUser(keycloakUserId, usernameOrEmail);
+        if (status == null) {
+            return new BaseResponse<>(false, null, 404, "User not found", null);
+        }
+
+        return new BaseResponse<>(true, "Onboarding status fetched successfully", 0, null, status);
+    }
+
+    /**
+     * Internal endpoint used by downstream services to resolve local numeric userId from a Keycloak token.
+     */
+    @Operation(security = { @SecurityRequirement(name = "bearerAuth") })
+    @GetMapping("/internal/me-id")
+    public ResponseEntity<BaseResponse<Long>> getCurrentUserLocalId(Authentication authentication) {
+        if (authentication == null || !(authentication.getPrincipal() instanceof Jwt jwt)) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+                    .body(new BaseResponse<>(false, null, 401, "Unauthorized", null));
+        }
+
+        String keycloakUserId = jwt.getSubject();
+        String usernameOrEmail = jwt.getClaimAsString("preferred_username");
+        if (usernameOrEmail == null || usernameOrEmail.isBlank()) {
+            usernameOrEmail = jwt.getClaimAsString("email");
+        }
+
+        UserCredential user = null;
+        if (keycloakUserId != null && !keycloakUserId.isBlank()) {
+            user = service.findUserByKeycloakUserId(keycloakUserId);
+        }
+        if (user == null && usernameOrEmail != null && !usernameOrEmail.isBlank()) {
+            user = service.findUserByUsernameOrEmail(usernameOrEmail);
+        }
+        if (user == null) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                    .body(new BaseResponse<>(false, null, 404, "User not found for this token (link Keycloak user to app user)", null));
+        }
+        return ResponseEntity.ok(new BaseResponse<>(true, "Success", 0, null, user.getId()));
     }
 }

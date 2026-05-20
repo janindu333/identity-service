@@ -4,8 +4,6 @@ import jakarta.persistence.Entity;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
-import jakarta.persistence.ManyToOne;
-import jakarta.persistence.JoinColumn;
 import jakarta.persistence.Column;
 import lombok.AllArgsConstructor;
 import lombok.Getter;
@@ -22,22 +20,18 @@ public class UserCredential {
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
-    private String firstName;
-    private String lastName;
-    private String email;
-    private String phone;
-    private String password;
 
     private Double latitude;
 
     private Double longitude;
-    
-    @ManyToOne
-    @JoinColumn(name = "role_id")
-    private Role role;
-    
-    @Column(nullable = false)
-    private Boolean emailVerified = false;
+
+    /**
+     * Stable Keycloak user identifier (JWT "sub").
+     * In phase-1 migration this becomes the primary identity linkage
+     * while legacy fields are still kept for compatibility.
+     */
+    @Column(length = 64, unique = true)
+    private String keycloakUserId;
     
     /**
      * Onboarding status - JSON string storing completed steps
@@ -54,16 +48,7 @@ public class UserCredential {
     @Column(length = 50)
     private String currentOnboardingStep;
 
-    // Convenience method to get full name
-    public String getName() {
-        return firstName + " " + lastName;
-    }
-
-    // Convenience method to set name (for backward compatibility)
-    public void setName(String name) {
-        String[] parts = name.split(" ", 2);
-        this.firstName = parts[0];
-        this.lastName = parts.length > 1 ? parts[1] : "";
-    }
+    @Column(nullable = false)
+    private Boolean emailVerified = false;
 
 }

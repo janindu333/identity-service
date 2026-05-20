@@ -12,7 +12,9 @@ import lombok.NoArgsConstructor;
 @AllArgsConstructor
 public class OwnerSalonSummaryDto {
     private String saloonId;
+    private Long internalSaloonId;
     private Boolean hasBusinessHours;
     private Boolean hasServices;
     private Boolean hasStaffInvite;
+    private Boolean hasPaymentSetup;
 }
